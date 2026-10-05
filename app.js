@@ -3,14 +3,14 @@ import { h, clear, icon, toast, debounce } from './ui.js';
 import { ctx } from './ctx.js';
 
 const PAGES = {
-  dashboard: { title: 'Dashboard', icon: 'home', load: () => import('./pages/dashboard.js') },
-  payroll:   { title: 'Payroll', icon: 'table', load: () => import('./pages/payroll.js') },
-  explorer:  { title: 'Hours explorer', icon: 'search', load: () => import('./pages/explorer.js') },
-  calendar:  { title: 'Pay calendar', icon: 'cal', load: () => import('./pages/calendar.js') },
-  import:    { title: 'Import files', icon: 'upload', load: () => import('./pages/imports.js'), edit: true },
-  projects:  { title: 'Projects', icon: 'folder', load: () => import('./pages/projects.js') },
-  history:   { title: 'History', icon: 'clock', load: () => import('./pages/history.js'), edit: true },
-  users:     { title: 'Users', icon: 'users', load: () => import('./pages/users.js'), admin: true },
+  dashboard: { title: 'Dashboard', icon: 'home', load: () => import('./dashboard.js') },
+  payroll:   { title: 'Payroll', icon: 'table', load: () => import('./payroll.js') },
+  explorer:  { title: 'Hours explorer', icon: 'search', load: () => import('./explorer.js') },
+  calendar:  { title: 'Pay calendar', icon: 'cal', load: () => import('./calendar.js') },
+  import:    { title: 'Import files', icon: 'upload', load: () => import('./imports.js'), edit: true },
+  projects:  { title: 'Projects', icon: 'folder', load: () => import('./projects.js') },
+  history:   { title: 'History', icon: 'clock', load: () => import('./history.js'), edit: true },
+  users:     { title: 'Users', icon: 'users', load: () => import('./users.js'), admin: true },
 };
 const root = document.getElementById('app');
 const inviteFlow = /type=(invite|recovery)/.test(location.hash);   // read before Supabase cleans the URL
