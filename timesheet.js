@@ -193,3 +193,42 @@ export function reconcileProvider(provider, lines) {
   for (const [k, o] of ours) if (!theirs.has(k) && Math.abs(o.gross) > 0.005) out.push({ ni: o.ni, name: o.name, provider: 0, payroll: r2(o.gross), diff: r2(o.gross), inPayroll: true, missingFromProvider: true });
   return out.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// 6. A journal estimated from our own hours (before the payroll provider has run)
+// ---------------------------------------------------------------------------------------------
+export const DEFAULT_ESTIMATE = { er_ni_rate: 15, er_ni_threshold_year: 5000, apply_pension: true, er_pension_pct: 3, pension_lel_year: 6240, pension_uel_year: 50270, pension_trigger_year: 10000, accrual_account: '2200', accrual_label: 'Accrued payroll liabilities (estimate)' };
+export const periodsPerYear = (stream) => (stream === 'fortnightly' ? 26 : 12);
+// lines = rows of v_payroll_lines. Employer NI and pension are worked out per PERSON (across all their projects) and then shared out by pay.
+export function estimateRows(lines, stream, rules = {}) {
+  const R = { ...DEFAULT_ESTIMATE, ...rules }, ppy = periodsPerYear(stream), c = (x) => Math.round((+x || 0) * 100);
+  const byPerson = new Map();
+  for (const l of lines) { const k = l.ni_number || ('n:' + normKey(l.employee_name)); const p = byPerson.get(k) || { gross: 0, lines: [] }; p.gross += +l.gross_pay || 0; p.lines.push(l); byPerson.set(k, p); }
+  const rows = new Map();
+  const bump = (dep, key, cents) => { const d = rows.get(dep) || { department: dep, gross: 0, statutory: 0, er_nic: 0, er_pension: 0 }; d[key] += cents; rows.set(dep, d); };
+  for (const p of byPerson.values()) {
+    const niP = Math.max(0, p.gross - R.er_ni_threshold_year / ppy) * (R.er_ni_rate / 100);
+    const lel = R.pension_lel_year / ppy, uel = R.pension_uel_year / ppy, trig = R.pension_trigger_year / ppy;
+    const penP = R.apply_pension && p.gross > trig ? Math.max(0, Math.min(p.gross, uel) - lel) * (R.er_pension_pct / 100) : 0;
+    const total = p.gross || 1;
+    for (const l of p.lines) { const share = (+l.gross_pay || 0) / total, dep = l.project_name; bump(dep, 'gross', c(l.gross_pay)); bump(dep, 'statutory', c(l.ssp_pay)); bump(dep, 'er_nic', c(niP * share)); bump(dep, 'er_pension', c(penP * share)); }
+  }
+  return [...rows.values()].map((d) => ({ department: d.department, gross: d.gross / 100, statutory: d.statutory / 100, er_nic: d.er_nic / 100, er_pension: d.er_pension / 100 }));
+}
+export function buildEstimatedJournal(lines, stream, rules = {}, settings = {}, extra = []) {
+  const R = { ...DEFAULT_ESTIMATE, ...rules }, J = { ...DEFAULT_JOURNAL, ...settings, accounts: { ...DEFAULT_JOURNAL.accounts, ...(settings.accounts || {}) }, labels: { ...DEFAULT_JOURNAL.labels, ...(settings.labels || {}) } };
+  const rows = estimateRows(lines, stream, R), c = (x) => Math.round((+x || 0) * 100), out = [];
+  for (const kind of ['er_nic', 'er_pension']) for (const r of rows.slice().sort((a, b) => a.department.localeCompare(b.department))) if (c(r[kind])) out.push({ description: J.labels[kind], account: J.accounts[kind], tax_rate: J.tax_rate, project: r.department, debit: r[kind], credit: 0, auto: true });
+  for (const r of rows.slice().sort((a, b) => a.department.localeCompare(b.department))) { const v = (c(r.gross) - c(r.statutory)) / 100; if (c(v)) out.push({ description: J.labels.wages, account: J.accounts.wages, tax_rate: J.tax_rate, project: r.department, debit: v, credit: 0, auto: true }); }
+  const stat = rows.reduce((s, r) => s + c(r.statutory), 0) / 100; if (c(stat)) out.push({ description: J.labels.statutory, account: J.accounts.statutory, tax_rate: J.tax_rate, project: '', debit: stat, credit: 0, auto: true });
+  const sumDeb = out.reduce((s, l) => s + c(l.debit), 0);
+  for (const e of extra) out.push({ description: e.description, account: e.account, tax_rate: e.tax_rate || J.tax_rate, project: e.project || '', debit: num(e.debit), credit: num(e.credit), auto: false, id: e.id });
+  const debitNow = out.reduce((s, l) => s + c(l.debit), 0), creditNow = out.reduce((s, l) => s + c(l.credit), 0);
+  const accrual = (debitNow - creditNow) / 100;
+  if (c(accrual)) out.push({ description: R.accrual_label, account: R.accrual_account, tax_rate: J.tax_rate, project: '', debit: accrual < 0 ? -accrual : 0, credit: accrual > 0 ? accrual : 0, auto: true });
+  const debit = out.reduce((s, l) => s + c(l.debit), 0) / 100, credit = out.reduce((s, l) => s + c(l.credit), 0) / 100;
+  void sumDeb;
+  return { lines: out, debit, credit, difference: (c(debit) - c(credit)) / 100, balanced: c(debit) === c(credit), unexplained: [], unexplainedTotal: 0, estimate: true,
+    totals: { gross: rows.reduce((s, r) => s + c(r.gross), 0) / 100, er_nic: rows.reduce((s, r) => s + c(r.er_nic), 0) / 100, er_pension: rows.reduce((s, r) => s + c(r.er_pension), 0) / 100, statutory: stat, people: new Set(lines.map((l) => l.ni_number || l.employee_name)).size } };
+}

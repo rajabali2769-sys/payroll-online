@@ -1,6 +1,7 @@
 // Dashboard: where is this pay run, what needs attention, and a one-click way into the detail.
-import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun, loadSignals, loadProjects } from './api.js';
-import { h, clear, money, hrs, dm, dmy, addDays, ago, debounce, natCompare, confirmBox, toast, icon, donut, ring, PALETTE, initials } from './ui.js';
+import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun, loadSignals, loadProjects, savePref, saveSetting, loadSettings } from './api.js';
+import { WIDGETS, resolveLayout } from './widgets.js';
+import { h, clear, money, hrs, dm, dmy, addDays, ago, debounce, natCompare, confirmBox, toast, icon, donut, ring, PALETTE, initials, modal } from './ui.js';
 import { ctx, currentRun, runPicker, escalationCfg } from './ctx.js';
 import { openEscalate, pocFor, summarise } from './escalate.js';
 import { go } from './app.js';
@@ -73,7 +74,7 @@ export async function render(root) {
   document.addEventListener('click', onDoc);
 
   root.append(
-    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Dashboard'), h('p', null, 'Where this pay run stands, what needs a look, and one click into the detail.')), runPicker(() => load())),
+    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Dashboard'), h('p', null, 'Where this pay run stands, what needs a look, and one click into the detail.')), h('div', { class: 'row' }, h('button', { class: 'btn', onClick: () => customise() }, icon('gear'), 'Customise'), runPicker(() => load()))),
     h('div', { class: 'searchbox', style: { marginBottom: '14px' } }, h('span', { class: 'sglass' }, icon('search')), input, results),
     body);
 
@@ -134,7 +135,7 @@ export async function render(root) {
     const used = A.budget > 0 ? (A.gross / A.budget) * 100 : 0;
     const note = st === 'locked' ? `🔒 Locked by ${who(run.locked_by_email)}${run.locked_at ? ', ' + ago(run.locked_at) : ''}. Nobody can change this pay run until an admin unlocks it.`
       : st === 'approved' ? `✓ Approved by ${who(run.approved_by_email)}${run.approved_at ? ', ' + ago(run.approved_at) : ''}. Any edit or re-import withdraws the approval.`
-      : ctx.isAdmin ? 'The team keeps updating this pay run while it is open. When it has been checked, approve it, then lock it.' : 'The team updates this pay run while it is open. An admin approves and locks it once checked.';
+      : ctx.can('approve_lock') ? 'The team keeps updating this pay run while it is open. When it has been checked, approve it, then lock it.' : 'The team updates this pay run while it is open. An admin approves and locks it once checked.';
     return h('div', { class: 'hero' },
       h('div', { class: 'row wrap', style: { justifyContent: 'space-between', alignItems: 'flex-start', gap: '18px' } },
         h('div', { style: { minWidth: '260px', flex: 1 } },
@@ -148,9 +149,10 @@ export async function render(root) {
         h('div', { class: 'row', style: { gap: '22px', alignItems: 'center' } },
           ring(used, { size: 124, thick: 13, color: used > 100.5 ? '#fda4af' : '#5eead4', label: A.budget ? Math.round(used) + '%' : '–', sub: 'of budget used' }),
           h('div', { class: 'stack', style: { gap: '8px' } },
-            ctx.isAdmin && st === 'ready' ? h('button', { class: 'btn primary', onClick: () => transition('approve') }, '✓ Approve pay run') : null,
-            ctx.isAdmin && st === 'approved' ? [h('button', { class: 'btn primary', onClick: () => transition('lock') }, '🔒 Lock pay run'), h('button', { class: 'btn', onClick: () => transition('unlock') }, 'Withdraw approval')] : null,
-            ctx.isAdmin && st === 'locked' ? h('button', { class: 'btn', onClick: () => transition('unlock') }, '🔓 Unlock') : null,
+            ctx.can('approve_lock') && st === 'ready' ? h('button', { class: 'btn primary', onClick: () => transition('approve') }, '✓ Approve pay run') : null,
+            ctx.can('approve_lock') && st === 'approved' ? h('button', { class: 'btn primary', onClick: () => transition('lock') }, '🔒 Lock pay run') : null,
+            ctx.can('unlock') && st === 'approved' ? h('button', { class: 'btn', onClick: () => transition('unlock') }, 'Withdraw approval') : null,
+            ctx.can('unlock') && st === 'locked' ? h('button', { class: 'btn', onClick: () => transition('unlock') }, '🔓 Unlock') : null,
             h('a', { class: 'btn', href: '#/payroll' }, 'Open payroll →')))));
   }
 
@@ -293,26 +295,58 @@ export async function render(root) {
   }
 
   // ---------- page ----------
-  function paint() {
-    const run = S.run, A = analyse();
-    const pct = A.budget ? (A.diff / A.budget) * 100 : 0;
-    const vTone = A.diff > 0.5 ? 'neg' : A.diff < -0.5 ? 'pos' : '';
+  function missingCard() {
+    const miss = S.lines.filter((l) => num(l.budget_hours_total) > 0 && num(l.actual_hours) === 0 && num(l.leave_hours) === 0 && (l.fixed_pay === null || l.fixed_pay === undefined));
+    const people = new Map(); for (const l of miss) people.set(l.employee_id || l.employee_name.toLowerCase(), l);
+    const list = [...people.values()].sort((a, b) => num(b.budgeted_pay) - num(a.budgeted_pay)).slice(0, 6);
+    return h('div', { class: 'card pad', style: { marginBottom: '14px' } }, h('div', { class: 'row', style: { marginBottom: '6px' } }, h('div', { class: 'grow' }, h('h3', { style: { margin: 0 } }, 'Missing timesheets'), h('div', { class: 'small muted' }, 'People with a budget but no hours entered yet.')), h('span', { class: 'cn ' + (people.size ? 'r' : 'g') }, `${people.size} people`),
+      ctx.can('page:chase') ? h('a', { class: 'btn sm warn', href: '#/chase' }, icon('mail'), 'Chase by email') : null),
+      list.length ? h('div', { class: 'chips' }, list.map((l) => h('span', { class: 'chip', title: l.project_name }, `${l.employee_name} · ${money(l.budgeted_pay)}`)), people.size > list.length ? h('span', { class: 'small muted', style: { alignSelf: 'center' } }, `+${people.size - list.length} more`) : null) : h('div', { class: 'muted' }, '✓ Everyone with a budget has hours.'));
+  }
+  function kpisRow(A) {
+    const pct = A.budget ? (A.diff / A.budget) * 100 : 0, vTone = A.diff > 0.5 ? 'neg' : A.diff < -0.5 ? 'pos' : '';
     const kpi2 = (cls, ic, label, value, sub, o) => { const el = kpi(label, value, sub, o); el.classList.add('c', cls); el.insertBefore(h('div', { class: 'kic' }, icon(ic)), el.firstChild); return el; };
     const lv = S.signals.leave, sspPay = S.lines.reduce((s, l) => s + num(l.ssp_pay), 0);
-    clear(body).append(
-      heroCard(A), trackerCard(A),
-      h('div', { class: 'grid kpis k8' },
-        kpi2('kc-violet', 'pound', 'Gross pay', money(A.gross), `${S.lines.length.toLocaleString()} payroll lines`, { page: 'payroll' }),
-        kpi2('kc-blue', 'grid', 'Budgeted pay', money(A.budget), 'weekly budgets / fixed pay', { page: 'payroll' }),
-        kpi2(A.diff > 0.5 ? 'kc-red' : 'kc-green', 'trend', 'Difference', money(A.diff), `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.diff > 0.5 ? 'over budget' : A.diff < -0.5 ? 'under budget' : 'on budget'}`, { cls: vTone, page: 'payroll', params: { status: A.diff >= 0 ? 'Over' : 'Under' } }),
-        kpi2('kc-teal', 'users', 'People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
-        kpi2('kc-amber', 'clock', 'Hours worked', hrs(A.hours).replace(/\B(?=(\d{3})+(?!\d))/g, ','), `plus ${hrs(A.leave)} paid leave hours`, { page: 'explorer' }),
-        kpi2('kc-red', 'alert', 'Over budget', String(A.over), `${money(A.overSum)} over`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
-        kpi2('kc-green', 'check', 'Under budget', String(A.under), `${money(A.underSum)} under`, { page: 'payroll', params: { status: 'Under' } }),
-        kpi2('kc-pink', 'sun', 'Leave & SSP', String(lv.length), `SSP ${money(sspPay)} · ${lv.filter((x) => !x.paid && !x.ssp).length} unpaid`, { page: 'leave' })),
-      donutsCard(A), escalationCard(A), chartCard(A), tableCard(A),
-      h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', marginBottom: '14px' } }, attentionCard(A), exceptionCard('Largest overspends', 'Over'), exceptionCard('Largest underspends', 'Under')),
-      ctx.isAdmin && run.status !== 'locked' ? h('div', { class: 'card pad', style: { marginTop: '22px' } }, h('h3', null, 'Administration'), h('p', { class: 'small muted' }, 'Deleting a pay run removes all of its lines for everyone.'),
+    return h('div', { class: 'grid kpis k8' },
+      kpi2('kc-violet', 'pound', 'Gross pay', money(A.gross), `${S.lines.length.toLocaleString()} payroll lines`, { page: 'payroll' }),
+      kpi2('kc-blue', 'grid', 'Budgeted pay', money(A.budget), 'weekly budgets / fixed pay', { page: 'payroll' }),
+      kpi2(A.diff > 0.5 ? 'kc-red' : 'kc-green', 'trend', 'Difference', money(A.diff), `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.diff > 0.5 ? 'over budget' : A.diff < -0.5 ? 'under budget' : 'on budget'}`, { cls: vTone, page: 'payroll', params: { status: A.diff >= 0 ? 'Over' : 'Under' } }),
+      kpi2('kc-teal', 'users', 'People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
+      kpi2('kc-amber', 'clock', 'Hours worked', hrs(A.hours).replace(/\B(?=(\d{3})+(?!\d))/g, ','), `plus ${hrs(A.leave)} paid leave hours`, { page: 'explorer' }),
+      kpi2('kc-red', 'alert', 'Over budget', String(A.over), `${money(A.overSum)} over`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
+      kpi2('kc-green', 'check', 'Under budget', String(A.under), `${money(A.underSum)} under`, { page: 'payroll', params: { status: 'Under' } }),
+      kpi2('kc-pink', 'sun', 'Leave & SSP', String(lv.length), `SSP ${money(sspPay)} · ${lv.filter((x) => !x.paid && !x.ssp).length} unpaid`, { page: 'leave' }));
+  }
+
+  // ---------- choose what you see (per person) ----------
+  const roleDefault = () => (ctx.settings.dashboard_defaults || {})[ctx.me.role];
+  function customise() {
+    const pref = ctx.prefs.dashboard || {}, base = resolveLayout(pref, roleDefault());
+    let order = [...((pref.order || []).filter((id) => WIDGETS.some((w) => w.id === id))), ...WIDGETS.map((w) => w.id).filter((id) => !(pref.order || []).includes(id))];
+    const shown = new Set(base);
+    modal('Customise your dashboard', (close) => {
+      const list = h('div', { class: 'wlist' });
+      const draw = () => { clear(list).append(...order.map((id, i) => { const w = WIDGETS.find((x) => x.id === id);
+        return h('div', { class: 'wrow' }, h('input', { type: 'checkbox', checked: shown.has(id), onChange: (e) => { e.target.checked ? shown.add(id) : shown.delete(id); } }), h('div', { class: 'grow' }, w.title, h('div', { class: 'small muted', style: { fontWeight: 400 } }, w.desc)),
+          h('button', { class: 'mv', disabled: i === 0, onClick: () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; draw(); } }, '↑'), h('button', { class: 'mv', disabled: i === order.length - 1, onClick: () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; draw(); } }, '↓')); })); };
+      draw();
+      const roleSel = h('select', null, ['admin', 'editor', 'viewer'].map((r) => h('option', { value: r }, r)));
+      return h('div', { class: 'stack' }, h('div', { class: 'small muted' }, 'Tick what you want on your dashboard and use the arrows to put it in order. This only changes your own view.'), list,
+        h('div', { class: 'row wrap', style: { justifyContent: 'flex-end' } },
+          ctx.can('manage_settings') ? h('div', { class: 'row small', style: { marginRight: 'auto', gap: '6px' } }, 'Make this the default for', roleSel, h('button', { class: 'btn sm', onClick: async () => { const d = { ...(ctx.settings.dashboard_defaults || {}) }; d[roleSel.value] = { hidden: WIDGETS.map((w) => w.id).filter((id) => !shown.has(id)) }; try { await saveSetting('dashboard_defaults', d); ctx.settings = await loadSettings(); toast(`Saved as the default for ${roleSel.value}`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Save as default')) : null,
+          h('button', { class: 'btn', onClick: async () => { try { await savePref('dashboard', {}); ctx.prefs.dashboard = {}; close(); paint(); toast('Back to the standard layout', 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Reset'),
+          h('button', { class: 'btn primary', onClick: async () => { const v = { order, hidden: order.filter((id) => !shown.has(id)) }; try { await savePref('dashboard', v); ctx.prefs.dashboard = v; close(); paint(); toast('Dashboard saved', 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Save my dashboard')));
+    }, { wide: true });
+  }
+
+  // ---------- page ----------
+  function paint() {
+    const run = S.run, A = analyse();
+    const W = { hero: () => heroCard(A), checklist: () => trackerCard(A), kpis: () => kpisRow(A), donuts: () => donutsCard(A), escalations: () => escalationCard(A), missing: () => missingCard(), chart: () => chartCard(A), table: () => tableCard(A),
+      attention: () => h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', marginBottom: '14px' } }, attentionCard(A), exceptionCard('Largest overspends', 'Over'), exceptionCard('Largest underspends', 'Under')) };
+    const ids = resolveLayout(ctx.prefs.dashboard, roleDefault());
+    clear(body).append(...ids.map((id) => (W[id] ? W[id]() : null)).filter(Boolean), !ids.length ? h('div', { class: 'card empty' }, 'Everything is hidden. Use “Customise” to choose what you want to see.') : null,
+      ctx.can('delete_run') && run.status !== 'locked' ? h('div', { class: 'card pad', style: { marginTop: '22px' } }, h('h3', null, 'Administration'), h('p', { class: 'small muted' }, 'Deleting a pay run removes all of its lines for everyone.'),
         h('button', { class: 'btn danger sm', onClick: async () => {
           if (await confirmBox('Delete this pay run?', `“${run.label}” and all of its lines will be permanently removed for every user.`, 'Delete run', true)) {
             try { await deleteRun(run.id); ctx.runs = await loadRuns(); toast('Run deleted', 'ok'); location.reload(); } catch (e) { toast(e.message, 'err'); }

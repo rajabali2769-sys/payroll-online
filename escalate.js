@@ -1,6 +1,7 @@
 // "Budget is over -> one click -> email the point of contact (area manager) and log that it was done."
-import { loadProjects, addEscalation, saveProjectContact, loadEscalations } from './api.js';
-import { h, modal, money, toast, dmy, ago } from './ui.js';
+import { loadProjects, addEscalation, saveProjectContact, loadEscalations, sendEmails } from './api.js';
+import { textToHtml, parseEmails, EMAIL_OK } from './mail.js';
+import { h, modal, money, toast, dmy, ago, icon } from './ui.js';
 import { ctx, escalationCfg } from './ctx.js';
 import { normKey } from './parsers.js';
 
@@ -57,6 +58,11 @@ export async function openEscalate({ run, project, lines, onSent }) {
         h('button', { class: 'btn', onClick: close }, 'Cancel'),
         h('button', { class: 'btn', title: 'Use this if you sent it another way', onClick: async () => { if (await log('log')) close(); } }, 'Just log it'),
         h('button', { class: 'btn', onClick: async () => { try { await navigator.clipboard.writeText(`${subject.value}\n\n${body.value}`); toast('Message copied', 'ok'); } catch { toast('Could not copy', 'err'); } } }, 'Copy'),
+        ctx.can('send_emails') ? h('button', { class: 'btn good', title: 'Sends the email straight from the system (needs email set up in Customise → Email)', onClick: async () => {
+          const rcpt = parseEmails(to.value + ' ' + cc.value); if (!rcpt.length || rcpt.some((r) => !EMAIL_OK.test(r))) { err.textContent = 'Check the email addresses.'; err.classList.remove('hidden'); return; }
+          try { const r = await sendEmails('escalation', rcpt.map((a) => ({ to: a, subject: subject.value, html: textToHtml(body.value) })), { run_id: run.id, reply_to: ctx.me && ctx.me.email });
+            if (!r.sent) { err.textContent = (r.results[0] && r.results[0].error) || 'Not sent'; err.classList.remove('hidden'); return; }
+            if (await log('sent')) { toast(`Escalation emailed to ${r.sent} ${r.sent === 1 ? 'person' : 'people'}`, 'ok'); close(); } } catch (e) { err.textContent = e.message || String(e); err.classList.remove('hidden'); } } }, icon('mail'), 'Send now') : null,
         h('button', { class: 'btn warn', onClick: async () => {
           if (!(await log('mail'))) return;
           const text = body.value.length > 1500 ? body.value.slice(0, 1450) + '\n\n(…full detail in Payroll Online)' : body.value;

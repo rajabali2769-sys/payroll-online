@@ -1,5 +1,5 @@
 // Timesheets: upload a photo / PDF / Word timesheet, see it beside an entry grid, check it, and write it into payroll.
-import { loadTimesheets, saveTimesheet, deleteTimesheet, uploadTimesheetFile, timesheetUrl, commitEntries, loadRunData, onLive } from './api.js';
+import { loadTimesheets, saveTimesheet, deleteTimesheet, uploadTimesheetFile, uploadAiCopy, timesheetUrl, commitEntries, loadRunData, onLive, aiReadTimesheet } from './api.js';
 import { parseDayCell, parseTimesheetText, mondayOfISO, addDaysISO, DAY_NAMES } from './timesheet.js';
 import { pdfText, docxText } from './xlsx.js';
 import { h, clear, hrs, dmy, ago, toast, icon, confirmBox, debounce } from './ui.js';
@@ -8,6 +8,13 @@ import { normKey } from './parsers.js';
 
 const KIND = { handwritten: ['camera', 'Handwritten'], digital: ['file', 'Digital'], manual: ['table', 'Keyed in'] };
 const sumHours = (entries) => (entries || []).reduce((s, e) => s + (e.days || []).reduce((a, raw) => { const p = parseDayCell(raw || ''); return a + (p.hours || 0); }, 0), 0);
+
+async function downscale(file, max = 2200) {
+  const bmp = await createImageBitmap(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height)), c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k); c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+}
+const cellFromDay = (d) => (d && d.in && d.out ? `${d.in}-${d.out}` : d && d.hours ? String(d.hours) : '');
 
 export async function render(root) {
   const run = currentRun();
@@ -51,6 +58,22 @@ export async function render(root) {
     const scored = names.map((n) => ({ n, s: normKey(n).split(/\s+/).filter((p) => p.length >= 3 && toks.some((t) => t.startsWith(p.slice(0, 4)) || p.startsWith(t.slice(0, 4)))).length })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
     return scored.length && (scored.length === 1 || scored[0].s > scored[1].s) ? scored[0].n : null;
   }
+  function matchEmployee(name, project) {
+    const toks = (s) => normKey(s).split(/[^a-z]+/).filter(Boolean), want = toks(name), pool = [...new Set(lines.filter((l) => !project || l.project_name === project).map((l) => l.employee_name))];
+    let best = null, score = 0;
+    for (const n of pool) { const have = toks(n); let s = 0;
+      if (normKey(n) === normKey(name)) s = 100; else { const all = want.every((w) => have.some((x) => x === w || (w.length >= 3 && x.startsWith(w.slice(0, 4))))); if (all && want.length) s = 50 + want.length; else if (want[0] && have[0] && (want[0] === have[0] || want[0].slice(0, 4) === have[0].slice(0, 4)) && want.length > 1 && have.length > 1 && want[want.length - 1][0] === have[have.length - 1][0]) s = 30; }
+      if (s > score) { best = n; score = s; } }
+    return score >= 30 ? best : null;
+  }
+  // AI result -> {project, week, entries, note}
+  function aiToEntries(res, fallbackProject) {
+    const project = guessProject(res.site) || (fallbackProject && fallbackProject !== 'Unassigned' ? fallbackProject : null);
+    const entries = res.rows.map((r) => { const emp = matchEmployee(r.name, project), ln = emp ? lines.find((l) => l.employee_name === emp && (!project || l.project_name === project)) : null;
+      return { employee: emp || r.name, ni: (ln && ln.ni_number) || '', rate: (ln && ln.hourly_rate) || '', days: r.days.map(cellFromDay), stated: r.total_stated ?? '', ai: { confidence: r.confidence, notes: r.notes, matched: !!emp } }; });
+    const low = res.rows.filter((r) => r.confidence !== 'high').length;
+    return { project, week: res.week_commencing ? mondayOfISO(res.week_commencing) : null, entries, note: `✨ Read by AI: ${res.rows.length} people${res.site ? ' · ' + res.site : ''}${res.supervisor ? ' · supervisor ' + res.supervisor : ''}.${low ? ` ${low} row${low === 1 ? '' : 's'} the AI was unsure about are marked — check them against the photo.` : ''}${(res.warnings || []).length ? ' Warnings: ' + res.warnings.join('; ') : ''} Always check the numbers before saving.` };
+  }
   async function handleFiles(files) {
     if (!editable()) return;
     let first = null;
@@ -60,6 +83,7 @@ export async function render(root) {
         if (ext === 'doc') { toast(`“${f.name}” is an old Word .doc, which a browser cannot read. Save it as .docx or PDF (File → Save As) and upload again, or upload a photo of it.`, 'err'); continue; }
         if (!(f.type.startsWith('image/') || ['pdf', 'docx'].includes(ext))) { toast(`“${f.name}”: please upload a photo, PDF or .docx timesheet. For spreadsheets use Upload hours.`, 'err'); continue; }
         const path = await uploadTimesheetFile(run.id, f);
+        if (f.type.startsWith('image/') && f.size > 1_500_000) { try { await uploadAiCopy(path, await downscale(f)); } catch (er) { console.warn('could not make the smaller AI copy', er); } }
         const digital = !f.type.startsWith('image/');
         let project = null, week = mondayOfISO(run.period_start || new Date().toISOString().slice(0, 10)), entries = [], note = null;
         if (digital) {
@@ -71,6 +95,9 @@ export async function render(root) {
             note = `Read from the file: ${p.client || 'client not found'} · week commencing ${p.weekStart || '?'} · ${p.statedTotal || 0} hours stated.${p.days.some((d) => d.breakMins) ? ' A break is listed on the form — hours shown are as stated on the form; check whether the break should be deducted.' : ''}`;
           } catch (er) { note = 'Could not read this file automatically (' + (er.message || er) + '). Key it in beside the original.'; }
         }
+        if (!entries.length && ctx.can('use_ai_timesheet') && (ctx.settings.ai || {}).auto_read && (f.type.startsWith('image/') || ext === 'pdf')) {
+          try { const a = aiToEntries(await aiReadTimesheet({ path }), project); project = a.project || project; if (a.week) week = a.week; entries = a.entries; note = a.note; } catch (er) { note = 'AI could not read this one (' + (er.message || er) + '). Key it in beside the original.'; }
+        }
         const id = await saveTimesheet({ run_id: run.id, project_name: project || 'Unassigned', week_start: week, kind: digital ? 'digital' : 'handwritten', status: 'received', file_path: path, file_name: f.name, file_type: f.type || ext, entries, notes: note });
         if (!first) first = id;
       } catch (e) { toast(`${f.name}: ${e.message || e}`, 'err'); }
@@ -80,7 +107,7 @@ export async function render(root) {
 
   // ---------- the entry screen ----------
   async function openEditor(t) {
-    const E = t ? { ...t, rows: (t.entries || []).map((e) => ({ employee: e.employee || '', ni: e.ni || '', rate: e.rate ?? '', cells: [...(e.days || [])].concat(Array(7).fill('')).slice(0, 7), orig: [...(e.days || [])].concat(Array(7).fill('')).slice(0, 7), stated: e.stated ?? '' })) }
+    const E = t ? { ...t, rows: (t.entries || []).map((e) => ({ employee: e.employee || '', ni: e.ni || '', rate: e.rate ?? '', cells: [...(e.days || [])].concat(Array(7).fill('')).slice(0, 7), orig: [...(e.days || [])].concat(Array(7).fill('')).slice(0, 7), stated: e.stated ?? '', ai: e.ai || null })) }
       : { id: null, project_name: projectsInRun()[0] || '', site_name: '', week_start: mondayOfISO(run.period_start || new Date().toISOString().slice(0, 10)), supervisor: '', status: 'received', kind: 'manual', rows: [], file_path: null, notes: '' };
     const can = editable();
     const overlay = h('div', { class: 'overlay' }), panel = h('div', { class: 'drawer', style: { width: 'min(1280px, 98vw)' } });
@@ -129,6 +156,7 @@ export async function render(root) {
           if (!r.employee) problems.push(['bad', 'name?']); if (invalid) problems.push(['bad', 'check a cell']);
           if (r.employee && !ln && !(+r.rate > 0)) problems.push(['warn', 'new person: add £/h']);
           if (stated !== null && Math.abs(stated - t) > 0.01) problems.push(['warn', `stated ${hrs(stated)}h ≠ ${hrs(t)}h`]);
+          if (r.ai && r.ai.confidence && r.ai.confidence !== 'high') problems.push(['warn', '✨ AI unsure — check' + (r.ai.notes ? ': ' + r.ai.notes.slice(0, 60) : '')]);
           if (r.cells.some((x) => cell(x, r).kind === 'work' && cell(x, r).hours > 16)) problems.push(['warn', 'over 16h in a day']);
           clear(flag).append(...(problems.length ? problems.map(([k, m]) => h('span', { class: 'flag ' + k, style: { marginRight: '4px' } }, m)) : [h('span', { class: 'flag ok' }, ln ? '✓ matched' : '✓')]));
           bad += problems.filter((p) => p[0] === 'bad').length; warn += problems.filter((p) => p[0] === 'warn').length;
@@ -171,25 +199,33 @@ export async function render(root) {
       saveBtn.disabled = true;
       try {
         const res = await commitEntries(run, entries);
-        const snap = rows.map((r) => ({ employee: r.employee, ni: r.ni, rate: r.rate, days: r.cells, stated: r.stated }));
+        const snap = rows.map((r) => ({ employee: r.employee, ni: r.ni, rate: r.rate, days: r.cells, stated: r.stated, ai: r.ai || undefined }));
         const id = await saveTimesheet({ id: E.id || undefined, run_id: run.id, project_name: E.project_name, site_name: E.site_name || null, week_start: E.week_start, kind: E.kind, status: E.status === 'received' ? 'keyed' : E.status, supervisor: E.supervisor || null, file_path: E.file_path, file_name: E.file_name, file_type: E.file_type, notes: E.notes, entries: snap });
         void id; toast(`Written to payroll: ${res.updated} people updated, ${res.created} new`, 'ok'); close(); await load();
       } catch (e) { toast(e.message || String(e), 'err'); } finally { saveBtn.disabled = false; }
     }
     const saveBtn = h('button', { class: 'btn primary', onClick: save }, icon('check'), 'Save to payroll');
+    const aiBtn = ctx.can('use_ai_timesheet') && can && E.file_path && !/\.docx?$/i.test(E.file_name || '') ? h('button', { class: 'btn warn', onClick: async () => {
+      if (E.rows.some((r) => r.employee || r.cells.some((x) => String(x).trim())) && !(await confirmBox('Replace what is in the grid?', 'The AI will read the photo and replace the people and times currently in the grid.', 'Read with AI'))) return;
+      aiBtn.disabled = true; aiBtn.textContent = '✨ Reading…';
+      try { const a = aiToEntries(await aiReadTimesheet({ path: E.file_path }), E.project_name);
+        if (a.project) { E.project_name = a.project; proj.value = a.project; } if (a.week) { E.week_start = a.week; week.value = a.week; }
+        E.rows = a.entries.map((e) => ({ employee: e.employee, ni: e.ni, rate: e.rate, cells: e.days.concat(Array(7).fill('')).slice(0, 7), orig: [], stated: e.stated, ai: e.ai })); E.notes = a.note; aiNote.textContent = a.note; aiNote.classList.remove('hidden'); drawGrid(); }
+      catch (er) { toast(er.message || String(er), 'err'); } finally { aiBtn.disabled = false; aiBtn.textContent = '✨ Read with AI'; } } }, '✨ Read with AI') : null;
+    const aiNote = h('div', { class: 'notice' + (E.notes && /AI/.test(E.notes) ? '' : ' hidden'), style: { margin: '0 0 10px' } }, E.notes && /AI/.test(E.notes) ? E.notes : '');
     const staffBtn = h('button', { class: 'btn', onClick: () => { const have = new Set(E.rows.map((r) => normKey(r.employee))); const names = [...new Map(linesFor().map((l) => [normKey(l.employee_name), l])).values()].filter((l) => !have.has(normKey(l.employee_name)));
       names.forEach((l) => E.rows.push({ employee: l.employee_name, ni: l.ni_number || '', rate: l.hourly_rate, cells: Array(7).fill(''), stated: '' })); if (!names.length) toast('No more staff for this project in the pay run', 'err'); drawGrid(); } }, 'Load this project’s staff');
     const addBtn = h('button', { class: 'btn', onClick: () => { E.rows.push({ employee: '', ni: '', rate: '', cells: Array(7).fill(''), stated: '' }); drawGrid(); } }, icon('plus'), 'Add person');
 
     clear(panel).append(
       h('div', { class: 'row', style: { alignItems: 'flex-start' } }, h('div', { class: 'grow' }, h('h2', null, E.id ? 'Timesheet' : 'Key in a timesheet'), h('div', { class: 'muted small' }, E.file_name ? `${KIND[E.kind]?.[1] || ''} · ${E.file_name}` : 'No file attached')), h('button', { class: 'btn ghost', onClick: close }, icon('x'))),
-      E.notes ? h('div', { class: 'notice', style: { margin: '10px 0' } }, E.notes) : null,
+      E.notes && !/AI/.test(E.notes) ? h('div', { class: 'notice', style: { margin: '10px 0' } }, E.notes) : null,
       !can ? h('div', { class: 'notice warn', style: { margin: '10px 0' } }, '🔒 Read-only: this pay run is locked or you do not have edit rights.') : null,
       h('div', { class: 'split', style: { marginTop: '12px' } }, viewer, h('div', null,
         h('datalist', { id: 'tsproj' }, projectsInRun().map((p) => h('option', { value: p }))),
         h('div', { class: 'form-grid', style: { gridTemplateColumns: 'repeat(4,1fr)', marginBottom: '10px' } }, h('label', { class: 'fld' }, 'Project', proj), h('label', { class: 'fld' }, 'Site (optional)', site), h('label', { class: 'fld' }, 'Week commencing (Monday)', week), h('label', { class: 'fld' }, 'Supervisor on the sheet', sup)),
         h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Type the times as written: 9.30-14.30 · or just hours: 5 · or leave: AL 5, SICK 6, SSP, UNPAID 8. Leave codes come from Settings.'),
-        gridHost, h('div', { class: 'row wrap', style: { marginTop: '10px' } }, can ? [addBtn, staffBtn] : null, h('div', { class: 'grow' }), summary),
+        aiNote, gridHost, h('div', { class: 'row wrap', style: { marginTop: '10px' } }, can ? [aiBtn, addBtn, staffBtn] : null, h('div', { class: 'grow' }), summary),
         h('div', { class: 'row wrap', style: { marginTop: '14px' } }, h('label', { class: 'fld' }, 'Status', status), h('div', { class: 'grow' }), h('button', { class: 'btn', onClick: close }, 'Close'), can ? saveBtn : null))));
     drawGrid(); drawViewer();
   }

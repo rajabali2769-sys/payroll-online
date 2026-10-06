@@ -343,3 +343,50 @@ export async function loadSignals(runId) {
   ]);
   return { timesheets: ts, leave: lv, escalations: es, provider: pv.length, exports: je };
 }
+
+// =====================================================================================================
+// v4: permissions, preferences, email + AI functions, contacts, payslips
+// =====================================================================================================
+export const loadRolePerms = async () => ok(await sb.from('role_permissions').select('*'));
+export const saveRolePerm = async (role, perm, allowed) => ok(await sb.from('role_permissions').upsert({ role, perm, allowed }, { onConflict: 'role,perm' }));
+export const loadPref = async (key) => { const r = ok(await sb.from('user_prefs').select('value').eq('key', key).maybeSingle()); return r ? r.value : null; };
+export const savePref = async (key, value) => ok(await sb.from('user_prefs').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'user_id,key' }));
+export const loadAllSummaries = async () => fetchAll(() => sb.from('v_run_summary').select('*').order('run_id'));
+
+// Calls to the cloud functions (send-email, ai). Errors come back as plain, readable messages.
+export async function callFn(name, body) {
+  const { data, error } = await sb.functions.invoke(name, { body });
+  if (error) {
+    let msg = error.message || String(error);
+    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { /* keep the generic message */ }
+    if (/Failed to send a request|FunctionsFetchError|not found/i.test(msg)) msg = `The “${name}” function is not set up yet. Follow the setup guide (Settings → Email / AI).`;
+    throw new Error(msg);
+  }
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+export const sendEmails = (kind, messages, extra = {}) => callFn('send-email', { kind, messages, ...extra });
+export const aiReadTimesheet = async ({ path, text, hint }) => (await callFn('ai', { action: 'read_timesheet', path, text, hint })).result;
+export const aiChat = (messages, current_run) => callFn('ai', { action: 'chat', messages, current_run });
+
+// ---------- employee contacts (email) ----------
+export const loadEmployeesAll = async () => fetchAll(() => sb.from('employees').select('id,full_name,name_key,ni_number,email,phone').order('full_name').order('id'));
+// rows: [{name, ni, email}] -> match on NI number, then on name; create anyone who is missing
+export async function saveContacts(rows) {
+  const emps = await loadEmployeesAll(); const byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e])), byName = new Map(emps.map((e) => [e.name_key, e]));
+  let updated = 0, created = 0, skipped = 0;
+  for (const r of rows) {
+    const email = String(r.email || '').trim(); if (!email) { skipped++; continue; }
+    const ni = String(r.ni || '').replace(/\s+/g, '').toUpperCase(), nk = normKey(r.name), e = (ni && byNi.get(ni)) || byName.get(nk);
+    if (e) { if ((e.email || '').toLowerCase() !== email.toLowerCase()) { ok(await sb.from('employees').update({ email }).eq('id', e.id)); updated++; } else skipped++; }
+    else { ok(await sb.from('employees').insert({ id: crypto.randomUUID(), full_name: r.name, name_key: nk, ni_number: ni || null, email })); created++; }
+  }
+  return { updated, created, skipped };
+}
+export const setEmployeeEmail = async (id, email) => ok(await sb.from('employees').update({ email: email || null }).eq('id', id));
+export const loadEmailLog = async (runId, kind) => { let q = sb.from('email_log').select('*').order('created_at', { ascending: false }).limit(1000); if (runId) q = q.eq('run_id', runId); if (kind) q = q.eq('kind', kind); return ok(await q); };
+export const setPayslipsPublished = async (runId, on) => ok(await sb.from('pay_runs').update({ payslips_published_at: on ? new Date().toISOString() : null }).eq('id', runId));
+export async function uploadAiCopy(path, blob) {
+  const { error } = await sb.storage.from('timesheets').upload(path + '__ai.jpg', blob, { contentType: 'image/jpeg', upsert: false });
+  if (error) throw new Error(error.message);
+}

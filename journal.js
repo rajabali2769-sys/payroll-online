@@ -1,6 +1,6 @@
 // Manual journal: import the payroll provider (BP) report → reconcile to payroll → build the Xero journal → export.
 import { loadProvider, replaceProvider, loadJournalExtra, addJournalExtra, deleteJournalExtra, loadJournalExports, logJournalExport, loadRunData } from './api.js';
-import { parseProviderRows, buildJournal, journalToRows, reconcileProvider, DEFAULT_JOURNAL } from './timesheet.js';
+import { parseProviderRows, buildJournal, buildEstimatedJournal, journalToRows, reconcileProvider, DEFAULT_JOURNAL, DEFAULT_ESTIMATE } from './timesheet.js';
 import { loadXLSX, sheetRows } from './xlsx.js';
 import { h, clear, money, hrs, ago, toast, icon, downloadCSV, modal } from './ui.js';
 import { ctx, currentRun, runPicker, journalCfg } from './ctx.js';
@@ -8,13 +8,15 @@ import { ctx, currentRun, runPicker, journalCfg } from './ctx.js';
 export async function render(root) {
   const run = currentRun();
   if (!run) { root.append(h('div', { class: 'card empty' }, 'Import a file first.')); return; }
-  const S = { provider: [], extra: [], exports: [], lines: [], candidates: null, file: null, showRec: false };
+  const S = { provider: [], extra: [], exports: [], lines: [], candidates: null, file: null, showRec: false, source: 'provider', loaded: false };
   const host = h('div', { class: 'stack' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Manual journal'), h('p', null, 'Build the Xero manual journal for this pay run from the payroll provider’s report, check it balances, and export it.')), runPicker(() => location.reload())), host);
 
   async function load() {
     [S.provider, S.extra, S.exports] = await Promise.all([loadProvider(run.id).catch(() => []), loadJournalExtra(run.id).catch(() => []), loadJournalExports(run.id).catch(() => [])]);
-    if (S.provider.length && !S.lines.length) S.lines = (await loadRunData(run.id)).lines;
+    if (!S.lines.length) S.lines = (await loadRunData(run.id)).lines;
+    if (!S.provider.length && !S.loaded) S.source = 'hours';
+    S.loaded = true;
     draw();
   }
   const rows = () => S.provider.map((p) => ({ ...p, gross: +p.gross, net: +p.net, takehome: +p.takehome, tax: +p.tax, ee_nic: +p.ee_nic, er_nic: +p.er_nic, ee_pension: +p.ee_pension, er_pension: +p.er_pension, statutory: +p.statutory, student_loan: +p.student_loan, attachment: +p.attachment, expenses: +p.expenses }));
@@ -59,8 +61,9 @@ export async function render(root) {
   }
 
   function journalCard() {
-    if (!S.provider.length) return null;
-    const c = cfg(), j = buildJournal(rows(), c, S.extra);
+    const est = S.source === 'hours';
+    if (!est && !S.provider.length) return null;
+    const c = cfg(), j = est ? buildEstimatedJournal(S.lines, run.stream, ctx.settings.estimate || {}, c, S.extra) : buildJournal(rows(), c, S.extra);
     const addLine = (d = {}) => modal('Add a journal line', (close) => {
       const desc = h('input', { type: 'text', value: d.description || '' }), acc = h('input', { type: 'text', value: d.account || c.accounts.net }), proj = h('input', { type: 'text', value: d.project || '', placeholder: 'optional' });
       const dbt = h('input', { type: 'number', step: 'any', value: d.debit || '' }), crd = h('input', { type: 'number', step: 'any', value: d.credit || '' }), tax = h('input', { type: 'text', value: c.tax_rate });
@@ -76,7 +79,8 @@ export async function render(root) {
       try { await logJournalExport({ run_id: run.id, file_name: base + '.' + kind, lines: j.lines.length, total_debit: j.debit, total_credit: j.credit, by_email: ctx.me?.email || null }); S.exports = await loadJournalExports(run.id); } catch { /* not critical */ }
       toast('Journal exported', 'ok'); draw();
     };
-    return h('div', { class: 'card pad' }, h('div', { class: 'step-h' }, h('span', { class: 'num' }, '3'), h('h3', { style: { margin: 0 } }, 'Journal'), h('div', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => addLine() }, icon('plus'), 'Add a line')),
+    return h('div', { class: 'card pad' }, h('div', { class: 'step-h' }, h('span', { class: 'num' }, '3'), h('h3', { style: { margin: 0 } }, est ? 'Journal — estimated from your hours' : 'Journal — from the provider report'), h('div', { class: 'grow' }), h('button', { class: 'btn sm', onClick: () => addLine() }, icon('plus'), 'Add a line')),
+      est ? h('div', { class: 'notice warn', style: { marginBottom: '12px' } }, `Estimate. Wages come from the gross pay in Payroll Online. Employer NI (${(ctx.settings.estimate || DEFAULT_ESTIMATE).er_ni_rate ?? 15}% above the threshold) and employer pension (${(ctx.settings.estimate || DEFAULT_ESTIMATE).er_pension_pct ?? 3}% of qualifying earnings) are worked out per person from the rules in Customise → Pay, leave & journal. The credit side is one accrual line. Replace it with the exact journal once the payroll provider has run.`) : null,
       h('div', { class: 'balance' }, h('div', { class: 'bx' }, h('span', { class: 'small muted' }, 'Total debits'), h('b', null, money(j.debit))), h('div', { class: 'bx' }, h('span', { class: 'small muted' }, 'Total credits'), h('b', null, money(j.credit))),
         h('div', { class: 'bx ' + (j.balanced ? 'ok' : 'bad') }, h('span', { class: 'small muted' }, j.balanced ? 'Balanced ✓' : 'Out of balance'), h('b', null, money(j.credit - j.debit)))),
       !j.balanced ? h('div', { class: 'notice warn', style: { marginTop: '12px' } }, h('b', null, `The journal is ${money(Math.abs(j.difference))} ${j.difference > 0 ? 'short on the credit side' : 'short on the debit side'}.`),
@@ -88,9 +92,14 @@ export async function render(root) {
         ), h('tfoot', null, h('tr', null, h('td', null, 'Total'), h('td'), h('td'), h('td'), h('td', { class: 'num' }, money(j.debit)), h('td', { class: 'num' }, money(j.credit)), h('td'))))),
       h('div', { class: 'row wrap', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onClick: () => exportIt('xlsx') }, icon('download'), 'Download Excel (Xero layout)'), h('button', { class: 'btn', onClick: () => exportIt('csv') }, 'Download CSV'),
         h('div', { class: 'grow' }), S.exports.length ? h('span', { class: 'small muted' }, `Last exported ${ago(S.exports[0].created_at)}${S.exports[0].by_email ? ' by ' + S.exports[0].by_email.split('@')[0] : ''}`) : h('span', { class: 'small muted' }, 'Not exported yet')),
-      h('div', { class: 'small muted', style: { marginTop: '8px' } }, `Wages = gross − statutory pay, per project · Employer NI and pensions per project · credits: net wages (take-home), PAYE (tax + employee and employer NI + loans), pensions, attachment orders. Accounts and wording come from Settings.`));
+      h('div', { class: 'small muted', style: { marginTop: '8px' } }, est ? 'Wages = gross pay − SSP, per project · employer NI and pension estimated per person · one accrual credit so it balances. Accounts and wording come from Settings.' : 'Wages = gross − statutory pay, per project · Employer NI and pensions per project · credits: net wages (take-home), PAYE (tax + employee and employer NI + loans), pensions, attachment orders. Accounts and wording come from Settings.'));
   }
 
-  function draw() { clear(host).append(importCard(), recCard(), journalCard()); }
+  function sourceBar() {
+    return h('div', { class: 'card pad', style: { display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' } }, h('b', null, 'Build the journal from'),
+      h('div', { class: 'seg' }, h('button', { class: S.source === 'provider' ? 'on' : '', onClick: () => { S.source = 'provider'; draw(); } }, 'Payroll provider report (exact)'), h('button', { class: S.source === 'hours' ? 'on' : '', onClick: () => { S.source = 'hours'; draw(); } }, 'Our own hours (estimate)')),
+      h('span', { class: 'small muted' }, S.source === 'hours' ? 'No provider report needed — made straight from the hours and pay in this payroll.' : 'Uses the BrightPay report for exact tax, NI and net pay.'));
+  }
+  function draw() { clear(host).append(sourceBar(), S.source === 'provider' ? importCard() : null, S.source === 'provider' ? recCard() : null, journalCard()); }
   await load();
 }
