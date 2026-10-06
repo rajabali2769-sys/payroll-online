@@ -1,645 +1,70 @@
-import {
-  loadRuns,
-  loadSummary,
-  loadPeriods,
-  sb,
-  onLive,
-  deleteRun
-} from './api.js';
-
-import {
-  h,
-  clear,
-  money,
-  hrs,
-  dm,
-  dmy,
-  debounce,
-  natCompare,
-  confirmBox,
-  toast
-} from './ui.js';
-
-import {
-  ctx,
-  currentRun,
-  runPicker
-} from './ctx.js';
-
+import { loadRuns, loadSummary, loadPeriods, sb, onLive, deleteRun } from './api.js';
+import { h, clear, money, hrs, dm, dmy, debounce, natCompare, confirmBox, toast, icon } from './ui.js';
+import { ctx, currentRun, runPicker } from './ctx.js';
 import { go } from './app.js';
 
-
 export async function render(root) {
-
   if (!ctx.runs.length) {
-    root.append(
-      h('div', { class: 'card empty' },
-        h('h2', null, 'No payroll data yet'),
-        h(
-          'p',
-          null,
-          ctx.canEdit
-            ? 'Import your monthly or fortnightly Excel file to get started.'
-            : 'An editor needs to import the first payroll file.'
-        ),
-        ctx.canEdit
-          ? h('a', { class: 'btn primary', href: '#/import' }, 'Import payroll')
-          : null
-      )
-    );
+    root.append(h('div', { class: 'card empty' }, h('h2', { style: { color: '#14222b', margin: '0 0 6px' } }, 'No payroll data yet'),
+      h('p', null, ctx.canEdit ? 'Import your monthly or fortnightly Excel file to get started.' : 'An editor needs to import the first file.'),
+      ctx.canEdit ? h('a', { class: 'btn primary', href: '#/import' }, icon('upload'), 'Import a file') : null));
     return;
   }
-
-
   const body = h('div');
-
-  const head = h(
-    'div',
-    { class: 'page-head' },
-
-    h(
-      'div',
-      null,
-      h('h1', null, 'Payroll Dashboard'),
-      h(
-        'p',
-        { class: 'muted' },
-        'Payroll performance, budget control and approval status.'
-      )
-    ),
-
-    runPicker(() => load())
-  );
-
+  const head = h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Dashboard'), h('p', null, 'Where this pay run stands against budget, by pay date.')),
+    runPicker(() => load()));
   root.append(head, body);
 
-
-  async function approve(run) {
-
-    if (!await confirmBox(
-      'Approve payroll?',
-      `Approve "${run.label}" for payroll processing?`,
-      'Approve'
-    )) return;
-
-    try {
-
-      const { error } = await sb.rpc(
-        'approve_pay_run',
-        { p_run: run.id }
-      );
-
-      if (error) throw error;
-
-      toast('Payroll approved', 'ok');
-
-      ctx.runs = await loadRuns();
-
-      await load();
-
-    } catch (e) {
-
-      toast(e.message || 'Could not approve payroll', 'err');
-
-    }
-  }
-
-
-  async function lock(run) {
-
-    if (!await confirmBox(
-      'Lock payroll?',
-      `Lock "${run.label}"? Payroll figures will no longer be editable.`,
-      'Lock payroll'
-    )) return;
-
-    try {
-
-      const { error } = await sb.rpc(
-        'lock_pay_run',
-        { p_run: run.id }
-      );
-
-      if (error) throw error;
-
-      toast('Payroll locked', 'ok');
-
-      ctx.runs = await loadRuns();
-
-      await load();
-
-    } catch (e) {
-
-      toast(e.message || 'Could not lock payroll', 'err');
-
-    }
-  }
-
-
-  async function unlock(run) {
-
-    if (!await confirmBox(
-      'Unlock payroll?',
-      `Unlock "${run.label}" for further review?`,
-      'Unlock'
-    )) return;
-
-    try {
-
-      const { error } = await sb.rpc(
-        'unlock_pay_run',
-        { p_run: run.id }
-      );
-
-      if (error) throw error;
-
-      toast('Payroll unlocked', 'ok');
-
-      ctx.runs = await loadRuns();
-
-      await load();
-
-    } catch (e) {
-
-      toast(e.message || 'Could not unlock payroll', 'err');
-
-    }
-  }
-
-
   async function load() {
-
-    const selected = currentRun();
-
-    const run = ctx.runs.find(x => x.id === selected.id) || selected;
-
-    const [
-      summary,
-      periods,
-      worst,
-      best,
-      linesResult
-    ] = await Promise.all([
-
-      loadSummary(run.id),
-
-      loadPeriods(run.id),
-
-      sb
-        .from('v_payroll_lines')
-        .select(
-          'id,employee_id,employee_name,project_name,site_name,pay_group,gross_pay,budgeted_pay,difference'
-        )
-        .eq('run_id', run.id)
-        .order('difference', { ascending: false })
-        .limit(10),
-
-      sb
-        .from('v_payroll_lines')
-        .select(
-          'id,employee_name,project_name,site_name,pay_group,gross_pay,budgeted_pay,difference'
-        )
-        .eq('run_id', run.id)
-        .order('difference', { ascending: true })
-        .limit(10),
-
-      sb
-        .from('v_payroll_lines')
-        .select(
-          'employee_id,employee_name,project_name,site_name,gross_pay,budgeted_pay,difference'
-        )
-        .eq('run_id', run.id)
-
+    const run = currentRun();
+    const [summary, periods, worst, best] = await Promise.all([
+      loadSummary(run.id), loadPeriods(run.id),
+      sb.from('v_payroll_lines').select('id,employee_name,project_name,pay_group,gross_pay,budgeted_pay,difference').eq('run_id', run.id).order('difference', { ascending: false }).limit(8),
+      sb.from('v_payroll_lines').select('id,employee_name,project_name,pay_group,gross_pay,budgeted_pay,difference').eq('run_id', run.id).order('difference', { ascending: true }).limit(8),
     ]);
-
-
-    const lines = linesResult.data || [];
-
-
-    const sum = key =>
-      summary.reduce(
-        (total, row) => total + (+row[key] || 0),
-        0
-      );
-
-
-    const gross = sum('gross');
-    const budget = sum('budgeted');
-    const difference = sum('difference');
-
-    const variancePct =
-      budget
-        ? (difference / budget) * 100
-        : 0;
-
-
-    const employees = new Set(
-      lines.map(
-        x => x.employee_id || x.employee_name
-      )
-    ).size;
-
-
-    const projects = new Set(
-      lines
-        .map(x => x.project_name)
-        .filter(Boolean)
-    ).size;
-
-
-    const sites = new Set(
-      lines
-        .map(x => x.site_name)
-        .filter(Boolean)
-    ).size;
-
-
-    const windowByGroup = new Map(
-      periods.map(
-        p => [p.pay_group, p]
-      )
-    );
-
-
-    const maxGross = Math.max(
-      1,
-      ...summary.map(
-        r => +r.gross || 0
-      )
-    );
-
-
-    const status = run.status || 'ready';
-
-
-    const statusLabel =
-      status === 'locked'
-        ? 'LOCKED'
-        : status === 'approved'
-          ? 'APPROVED'
-          : status === 'importing'
-            ? 'IMPORTING'
-            : 'READY FOR REVIEW';
-
-
-    const statusClass =
-      status === 'locked'
-        ? 'status-locked'
-        : status === 'approved'
-          ? 'status-approved'
-          : status === 'importing'
-            ? 'status-importing'
-            : 'status-ready';
-
-
-    const statusIcon =
-      status === 'locked'
-        ? '🔒'
-        : status === 'approved'
-          ? '✓'
-          : status === 'importing'
-            ? '↻'
-            : '●';
-
-
-    const statusActions = h(
-      'div',
-      {
-        style: {
-          display: 'flex',
-          gap: '8px',
-          flexWrap: 'wrap'
-        }
-      },
-
-      ctx.isAdmin && status === 'ready'
-        ? h(
-            'button',
-            {
-              class: 'btn primary',
-              onClick: () => approve(run)
-            },
-            '✓ Approve Payroll'
-          )
-        : null,
-
-      ctx.isAdmin && status === 'approved'
-        ? h(
-            'button',
-            {
-              class: 'btn primary',
-              onClick: () => lock(run)
-            },
-            '🔒 Lock Payroll'
-          )
-        : null,
-
-      ctx.isAdmin && status === 'locked'
-        ? h(
-            'button',
-            {
-              class: 'btn',
-              onClick: () => unlock(run)
-            },
-            '🔓 Unlock Payroll'
-          )
-        : null
-    );
-
-
-    const search = h(
-      'input',
-      {
-        class: 'input',
-        type: 'search',
-        placeholder: 'Search employees, projects or sites...',
-        style: {
-          width: '100%',
-          fontSize: '15px'
-        }
-      }
-    );
-
-
-    search.addEventListener(
-      'input',
-      debounce(() => {
-
-        const value =
-          search.value.trim();
-
-        if (!value) return;
-
-      }, 300)
-    );
-
-
+    const sum = (k) => summary.reduce((s, r) => s + (+r[k] || 0), 0);
+    const gross = sum('gross'), bud = sum('budgeted'), diff = sum('difference');
+    const win = new Map(periods.map((p) => [p.pay_group, p]));
+    const maxGross = Math.max(1, ...summary.map((r) => +r.gross));
     clear(body).append(
-
-
-      h(
-        'div',
-        {
-          class: 'card pad',
-          style: {
-            marginBottom: '16px'
-          }
-        },
-
-        h(
-          'div',
-          {
-            style: {
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '16px',
-              flexWrap: 'wrap'
-            }
-          },
-
-          h(
-            'div',
-            null,
-
-            h(
-              'div',
-              {
-                class: `payroll-status ${statusClass}`
-              },
-              `${statusIcon} ${statusLabel}`
-            ),
-
-            h(
-              'h2',
-              {
-                style: {
-                  margin: '10px 0 4px'
-                }
-              },
-              run.label
-            ),
-
-            h(
-              'div',
-              { class: 'muted' },
-
-              [
-                run.stream
-                  ? run.stream[0].toUpperCase() +
-                    run.stream.slice(1)
-                  : '',
-
-                run.period_start && run.period_end
-                  ? `${dmy(run.period_start)} – ${dmy(run.period_end)}`
-                  : ''
-              ]
-                .filter(Boolean)
-                .join(' · ')
-            )
-          ),
-
-          statusActions
-        ),
-
-        status === 'locked'
-          ? h(
-              'div',
-              {
-                class: 'locked-notice',
-                style: {
-                  marginTop: '14px'
-                }
-              },
-              '🔒 This payroll is locked. Payroll editing is disabled by the database.'
-            )
-          : null
+      h('div', { class: 'grid kpis' },
+        kpi('Gross pay', money(gross), `${sum('lines').toLocaleString()} lines`),
+        kpi('Budgeted pay', money(bud), 'from weekly budgets / fixed pay'),
+        kpi('Difference', money(diff), diff > 0 ? 'over budget' : diff < 0 ? 'under budget' : 'on budget', diff > 0.5 ? 'neg' : diff < -0.5 ? 'pos' : ''),
+        kpi('Hours worked', hrs(sum('actual_hours')).replace(/\B(?=(\d{3})+(?!\d))/g, ','), 'delivered, excl. leave'),
+        kpi('Over budget', String(sum('over_lines')), 'lines to review', sum('over_lines') ? 'neg' : ''),
+        kpi('Under budget', String(sum('under_lines')), 'lines to review')),
+      h('div', { class: 'card', style: { marginBottom: '14px' } },
+        h('div', { class: 'tablewrap auto', style: { border: 0, boxShadow: 'none' } }, h('table', { class: 't' },
+          h('thead', null, h('tr', null, ['Pay date', 'Reconciliation window', 'Lines', 'Hours', 'Gross pay', 'Budgeted', 'Difference', 'Over', 'Under', 'Share of gross', ''].map((t, i) => h('th', { class: i > 1 && i < 9 ? 'num' : '' }, t)))),
+          h('tbody', null, [...summary].sort((a, b) => natCompare(a.pay_group, b.pay_group)).map((r) => {
+            const p = win.get(r.pay_group);
+            return h('tr', null,
+              h('td', null, h('span', { class: 'pill grp' }, r.pay_group)),
+              h('td', { class: 'muted' }, p && p.reconcile_from ? `${dm(p.reconcile_from)} – ${dmy(p.reconcile_to)}` : h('a', { href: '#/calendar' }, 'set window')),
+              h('td', { class: 'num' }, r.lines), h('td', { class: 'num' }, hrs(r.actual_hours)), h('td', { class: 'num' }, money(r.gross)), h('td', { class: 'num' }, money(r.budgeted)),
+              h('td', { class: 'num ' + (+r.difference > 0.5 ? 'neg' : +r.difference < -0.5 ? 'pos' : '') }, money(r.difference)),
+              h('td', { class: 'num' }, r.over_lines || ''), h('td', { class: 'num' }, r.under_lines || ''),
+              h('td', null, h('div', { class: 'bar' }, h('i', { style: { width: (100 * +r.gross / maxGross) + '%' } }))),
+              h('td', null, h('a', { class: 'btn sm', href: '#/payroll?group=' + encodeURIComponent(r.pay_group) }, 'Open')));
+          })))),
       ),
+      h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(380px,1fr))' } },
+        listCard('Largest overspends', worst.data, 'Over'), listCard('Largest underspends', best.data, 'Under')),
+      ctx.isAdmin ? h('div', { style: { marginTop: '22px' } }, h('button', { class: 'btn danger sm', onClick: async () => {
+        if (await confirmBox('Delete this pay run?', `"${run.label}" and all of its lines will be permanently removed for every user.`, 'Delete run', true)) {
+          try { await deleteRun(run.id); ctx.runs = await loadRuns(); toast('Run deleted', 'ok'); go('dashboard'); location.reload(); } catch (e) { toast(e.message, 'err'); }
+        } } }, icon('trash'), 'Delete this run')) : null);
+  }
+  const kpi = (l, v, s, cls) => h('div', { class: 'card kpi' }, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (cls || '') }, v), h('div', { class: 's' }, s));
+  const listCard = (title, rows, kind) => h('div', { class: 'card pad' }, h('h3', null, title),
+    !rows.length || Math.abs(+rows[0].difference) < 0.5 ? h('div', { class: 'muted' }, 'Nothing to show') :
+    h('table', { class: 't' }, h('tbody', null, rows.filter((r) => kind === 'Over' ? +r.difference > 0.5 : +r.difference < -0.5).map((r) => h('tr', null,
+      h('td', null, h('a', { href: '#/payroll?q=' + encodeURIComponent(r.employee_name) }, r.employee_name), h('div', { class: 'small muted' }, r.project_name)),
+      h('td', null, h('span', { class: 'pill grp' }, r.pay_group || '—')),
+      h('td', { class: 'num ' + (kind === 'Over' ? 'neg' : 'pos') }, money(r.difference)))))));
 
-
-      h(
-        'div',
-        {
-          class: 'grid kpis dashboard-kpis'
-        },
-
-        kpi(
-          'Gross Pay',
-          money(gross),
-          `${sum('lines').toLocaleString()} payroll lines`
-        ),
-
-        kpi(
-          'Budget',
-          money(budget),
-          'planned payroll'
-        ),
-
-        kpi(
-          'Variance',
-          money(difference),
-          `${variancePct >= 0 ? '+' : ''}${variancePct.toFixed(2)}% ${
-            difference > 0.5
-              ? 'over budget'
-              : difference < -0.5
-                ? 'under budget'
-                : 'on budget'
-          }`,
-          difference > 0.5
-            ? 'neg'
-            : difference < -0.5
-              ? 'pos'
-              : ''
-        ),
-
-        kpi(
-          'Employees',
-          employees.toLocaleString(),
-          'in this pay run'
-        ),
-
-        kpi(
-          'Hours Worked',
-          hrs(sum('actual_hours')),
-          'delivered, excluding leave'
-        ),
-
-        kpi(
-          'Needs Review',
-          (
-            sum('over_lines') +
-            sum('under_lines')
-          ).toLocaleString(),
-          `${sum('over_lines')} over · ${sum('under_lines')} under`,
-          sum('over_lines') ||
-          sum('under_lines')
-            ? 'neg'
-            : ''
-        )
-      ),
-
-
-      h(
-        'div',
-        {
-          class: 'grid',
-          style: {
-            gridTemplateColumns:
-              'repeat(auto-fit,minmax(180px,1fr))',
-            marginBottom: '16px'
-          }
-        },
-
-        miniStat(
-          'Projects',
-          projects
-        ),
-
-        miniStat(
-          'Sites',
-          sites
-        ),
-
-        miniStat(
-          'Pay groups',
-          summary.length
-        ),
-
-        miniStat(
-          'Average per employee',
-          employees
-            ? money(gross / employees)
-            : money(0)
-        )
-      ),
-
-
-      h(
-        'div',
-        {
-          class: 'card pad',
-          style: {
-            marginBottom: '16px'
-          }
-        },
-
-        h(
-          'div',
-          {
-            style: {
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px',
-              flexWrap: 'wrap',
-              marginBottom: '12px'
-            }
-          },
-
-          h(
-            'div',
-            null,
-            h('h3', { style: { margin: 0 } }, 'Payroll Search'),
-            h(
-              'div',
-              { class: 'small muted' },
-              'Find an employee, project or site.'
-            )
-          )
-        ),
-
-        search,
-
-        h(
-          'div',
-          {
-            style: {
-              marginTop: '10px'
-            }
-          },
-
-          h(
-            'a',
-            {
-              class: 'btn sm',
-              href: '#/payroll',
-              onClick: () => {
-                const q = search.value.trim();
-
-                if (q) {
-                  location.hash =
-                    '#/payroll?q=' +
-                    encodeURIComponent(q);
-                }
-              }
-            },
-            'Search Payroll'
-          )
-        )
-      ),
-
-
-      h(
-        'div',
-        {
-          class: 'card pad',
-          style: {
-            marginBottom: '16px'
-          }
-        },
-
-        h(
-          'div',
-          {
-            class: 'section-title'
-          },
-
-          h(
-            'div',
-            null,
-
-            h(
-              'h3',
-              { style: { margin: 0 } },
-              'Budget vs Actual'
-      
+  await load();
+  const off = onLive(debounce(() => load().catch(() => {}), 900));
+  return off;
+}
