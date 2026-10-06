@@ -1,6 +1,6 @@
-import { loadRunData, updateLine, upsertWeek, refreshLines, onLive, createLine, loadPeriods } from './api.js';
+import { loadRuns, loadRunData, updateLine, upsertWeek, refreshLines, onLive, createLine, loadPeriods } from './api.js';
 import { h, clear, money, hrs, dm, dmy, addDays, debounce, toast, modal, natCompare, downloadCSV, statusPill, icon } from './ui.js';
-import { ctx, currentRun, runPicker } from './ctx.js';
+import { ctx, currentRun, runPicker, runEditable } from './ctx.js';
 import { openLineDrawer } from './line-drawer.js';
 
 const TYPES = ['Hourly', 'Cover', 'Fixed', ''];
@@ -10,20 +10,30 @@ export async function render(root, params) {
   if (!run) { root.append(h('div', { class: 'card empty' }, 'Import a file first.')); return; }
   let data = { lines: [], weeksByLine: new Map() }, periods = [];
   let weekList = [];
-  const f = { q: params.q || '', group: params.group || '', project: params.project || '', status: params.status || '', type: '', weeks: new Set(), cols: { weeks: true, variance: false, pay: false } };
+  const f = { q: params.q || '', group: params.group || '', project: params.project || '', status: params.status || '', type: params.type || '', weeks: new Set(), cols: { weeks: true, variance: false, pay: false } };
   const localEdits = new Map();   // id -> time, so our own edits do not flash
   const rowEls = new Map();
 
+  const lockBar = h('div');
+  const canEdit = () => runEditable(run.id);
   const tableHost = h('div'), chipsHost = h('div', { class: 'chips' }), summary = h('span', { class: 'muted small' });
   const filterBar = h('div', { class: 'toolbar' });
   root.append(
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Payroll'), h('p', null, ctx.canEdit ? 'Click any highlighted cell to edit. Everyone sees the change straight away.' : 'Read-only view.')),
       h('div', { class: 'row' }, runPicker(() => { const prev = cleanup; prev && prev(); clear(root); render(root, {}).then((c) => { cleanup = c; }); }))),
-    filterBar, chipsHost, h('div', { style: { margin: '8px 0 10px' } }, summary), tableHost);
+    lockBar, filterBar, chipsHost, h('div', { style: { margin: '8px 0 10px' } }, summary), tableHost);
   let cleanup = null;
+
+  function paintLockBar() {
+    const r = ctx.runs.find((x) => x.id === run.id) || run;
+    clear(lockBar);
+    if (r.status === 'locked') lockBar.append(h('div', { class: 'notice warn', style: { marginBottom: '12px' } }, `🔒 This pay run was locked${r.locked_by_email ? ' by ' + r.locked_by_email.split('@')[0] : ''}. It is read-only for everyone until an admin unlocks it on the Dashboard.`));
+    else if (r.status === 'approved' && ctx.canEdit) lockBar.append(h('div', { class: 'notice', style: { marginBottom: '12px' } }, `✓ Approved${r.approved_by_email ? ' by ' + r.approved_by_email.split('@')[0] : ''}. If you change anything, the approval is withdrawn and it goes back to “ready for review”.`));
+  }
 
   // ---------- data ----------
   async function load() {
+    paintLockBar();
     [data, periods] = await Promise.all([loadRunData(run.id), loadPeriods(run.id)]);
     weekList = [...new Set([...data.weeksByLine.values()].flat().map((w) => w.week_start))].sort();
     if (!f.weeks.size) weekList.forEach((w) => f.weeks.add(w));
@@ -54,7 +64,7 @@ export async function render(root, params) {
       h('div', { class: 'grow' }),
       h('div', { class: 'row' },
         h('button', { class: 'btn', onClick: () => exportCsv() }, icon('download'), 'Export CSV'),
-        ctx.canEdit ? h('button', { class: 'btn primary', onClick: addLine }, icon('plus'), 'Add line') : null));
+        canEdit() ? h('button', { class: 'btn primary', onClick: addLine }, icon('plus'), 'Add line') : null));
     // week chips + column toggles
     const win = f.group ? periods.find((p) => p.pay_group === f.group) : null;
     clear(chipsHost).append(
@@ -138,7 +148,7 @@ export async function render(root, params) {
   }
   function fillCell(td, l, c) {
     clear(td);
-    const editable = ctx.canEdit && (c.edit || c.week);
+    const editable = canEdit() && (c.edit || c.week);
     td.classList.toggle('edit', !!editable);
     if (c.pillStatus) { td.append(statusPill(l.budget_status)); return; }
     if (c.pill) { td.append(l.pay_group ? h('span', { class: 'pill grp' }, l.pay_group) : h('span', { class: 'muted' }, '—')); }
@@ -269,6 +279,7 @@ export async function render(root, params) {
       if (e.type === 'UPDATE' && r.id) pending.ids.add(r.id); else pending.full = true;
     } else if (e.table === 'line_weeks') { const id = (e.row || e.old || {}).line_id; if (id && data.weeksByLine.has(id)) pending.ids.add(id); else if (e.type !== 'UPDATE') pending.full = true; }
     else if (e.table === 'pay_periods') { loadPeriods(run.id).then((p) => { periods = p; }); return; }
+    else if (e.table === 'pay_runs') { loadRuns().then((r) => { ctx.runs = r; paintLockBar(); buildControls(); draw(); }).catch(console.error); return; }
     else return;
     flush();
   });

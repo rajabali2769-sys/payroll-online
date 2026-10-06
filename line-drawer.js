@@ -1,7 +1,7 @@
 // Side panel for one payroll line: weekly figures, day-by-day hours, notes, history.
 import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit } from './api.js';
 import { h, clear, money, hrs, dm, dmy, addDays, mondayOf, DOW, toast, confirmBox, statusPill, ago, icon } from './ui.js';
-import { ctx } from './ctx.js';
+import { ctx, runEditable } from './ctx.js';
 
 export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
   const overlay = h('div', { class: 'overlay' });
@@ -14,10 +14,11 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
   document.body.append(overlay);
 
   let line, weeks, days, audit = [];
-  const edit = ctx.canEdit;
+  let edit = ctx.canEdit;
   const refresh = async () => {
     [line, weeks, days] = await Promise.all([loadLine(lineId), loadLineWeeks(lineId), loadDays(lineId)]);
-    if (edit) { try { audit = await loadAudit({ lineId, limit: 12 }); } catch { audit = []; } }
+    edit = !!line && runEditable(line.run_id);
+    if (ctx.canEdit) { try { audit = await loadAudit({ lineId, limit: 12 }); } catch { audit = []; } }
     draw(); onChange && onChange(line);
   };
   const guard = async (fn) => { try { await fn(); await refresh(); } catch (e) { toast(e.message || String(e), 'err'); await refresh(); } };
@@ -35,6 +36,7 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
     const dmap = new Map(days.map((d) => [String(d.work_date).slice(0, 10), d]));
 
     clear(panel).append(
+      ctx.canEdit && !edit ? h('div', { class: 'notice warn', style: { marginBottom: '12px' } }, '🔒 This pay run is locked, so this line is read-only. An admin can unlock it on the Dashboard.') : null,
       h('div', { class: 'row', style: { alignItems: 'flex-start' } },
         h('div', { class: 'grow' }, h('h2', null, line.employee_name), h('div', { class: 'muted' }, [line.project_name, line.site_name].filter(Boolean).join(' · '),
           ' ', h('span', { class: 'pill grp' }, line.pay_group || 'No pay date'), ' ', line.contract_type ? h('span', { class: 'pill grp' }, line.contract_type) : h('span', { class: 'pill flag' }, 'no contract type'))),
@@ -95,7 +97,7 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
       line.extra && Object.values(line.extra).some(Boolean) ? h('div', { class: 'small muted', style: { marginTop: '10px' } }, 'From the spreadsheet: ',
         Object.entries(line.extra).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(' · ')) : null,
 
-      edit && audit.length ? [h('h4', null, 'Recent changes to this line'), h('div', { class: 'stack', style: { gap: '6px' } }, audit.map((a) => h('div', { class: 'small' },
+      ctx.canEdit && audit.length ? [h('h4', null, 'Recent changes to this line'), h('div', { class: 'stack', style: { gap: '6px' } }, audit.map((a) => h('div', { class: 'small' },
         h('b', null, (a.user_email || 'someone').split('@')[0]), ' · ', ago(a.at), ' · ', a.table_name.replace('_', ' '), ' ', a.action.toLowerCase(), ': ',
         h('span', { class: 'muted' }, summarise(a)))))] : null,
       edit ? h('div', { style: { marginTop: '26px' } }, h('button', { class: 'btn danger sm', onClick: async () => {

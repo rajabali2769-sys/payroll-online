@@ -102,9 +102,10 @@ async function boot() {
   booted = true;
   if (stopLive) stopLive();
   stopLive = startLive(setLive);
-  onLive.__bound || (onLive.__bound = true, onLive(debounce(async (e) => {
-    if (e.table === 'pay_runs') { ctx.runs = await loadRuns(); }
-  }, 400)));
+  // Refresh the list of pay runs (status, approved/locked by ...) whenever any run changes.
+  // Only pay_runs events are debounced, so a burst of line edits can never swallow a status change.
+  const refreshRuns = debounce(async () => { try { ctx.runs = await loadRuns(); } catch (e) { console.error(e); } }, 300);
+  onLive.__bound || (onLive.__bound = true, onLive((e) => { if (e.table === 'pay_runs') refreshRuns(); }));
   if (!location.hash.startsWith('#/')) history.replaceState(null, '', location.pathname + '#/dashboard');
   route();
 }

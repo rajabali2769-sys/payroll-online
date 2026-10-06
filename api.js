@@ -86,6 +86,9 @@ export const savePeriod = async (row) => ok(await sb.from('pay_periods').upsert(
 export const deletePeriod = async (id) => ok(await sb.from('pay_periods').delete().eq('id', id));
 export const renameRun = async (id, label) => ok(await sb.from('pay_runs').update({ label }).eq('id', id));
 export const deleteRun = async (id) => ok(await sb.rpc('delete_run', { p_run: id }));
+export const approveRun = async (id) => ok(await sb.rpc('approve_pay_run', { p_run: id }));
+export const lockRun = async (id) => ok(await sb.rpc('lock_pay_run', { p_run: id }));
+export const unlockRun = async (id) => ok(await sb.rpc('unlock_pay_run', { p_run: id }));
 
 // ---------------- reference data ----------------
 export const loadProjects = async () => fetchAll(() => sb.from('projects').select('*').order('name'));
@@ -125,6 +128,7 @@ export function startLive(statusCb) {
 // ---------------- import ----------------
 export async function importPayload(p, { label, mode = 'new', onProgress = () => {} }) {
   const existing = ok(await sb.from('pay_runs').select('*').eq('stream', p.stream).eq('label', label).maybeSingle());
+  if (existing && existing.status === 'locked') throw new Error(`“${label}” is locked. An admin must unlock it on the Dashboard before it can be re-imported.`);
   if (existing && mode === 'new') throw new Error(`A ${p.stream} run called "${label}" already exists. Choose "Replace" or "Add new rows only", or change the name.`);
   let run = existing, created = false;
   const header = { period_start: p.period_start, period_end: p.period_end, source_file: p.source_file, status: 'importing' };
