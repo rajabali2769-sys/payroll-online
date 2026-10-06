@@ -2,6 +2,7 @@ import { loadRuns, loadRunData, updateLine, upsertWeek, refreshLines, onLive, cr
 import { h, clear, money, hrs, dm, dmy, addDays, debounce, toast, modal, natCompare, downloadCSV, statusPill, icon } from './ui.js';
 import { ctx, currentRun, runPicker, runEditable } from './ctx.js';
 import { openLineDrawer } from './line-drawer.js';
+import { openEscalate, summarise } from './escalate.js';
 
 const TYPES = ['Hourly', 'Cover', 'Fixed', ''];
 
@@ -10,7 +11,7 @@ export async function render(root, params) {
   if (!run) { root.append(h('div', { class: 'card empty' }, 'Import a file first.')); return; }
   let data = { lines: [], weeksByLine: new Map() }, periods = [];
   let weekList = [];
-  const f = { q: params.q || '', group: params.group || '', project: params.project || '', status: params.status || '', type: params.type || '', weeks: new Set(), cols: { weeks: true, variance: false, pay: false } };
+  const f = { q: params.q || '', group: params.group || '', project: params.project || '', status: params.status || '', type: params.type || '', weeks: new Set(), cols: (() => { try { return { weeks: true, variance: false, pay: false, leave: false, ...(JSON.parse(localStorage.getItem('payroll.cols') || '{}')) }; } catch { return { weeks: true, variance: false, pay: false, leave: false }; } })() };
   const localEdits = new Map();   // id -> time, so our own edits do not flash
   const rowEls = new Map();
 
@@ -63,6 +64,7 @@ export async function render(root, params) {
       sel('Contract type', 'type', [['Hourly'], ['Cover'], ['Fixed'], ['(none)', 'No type set']]),
       h('div', { class: 'grow' }),
       h('div', { class: 'row' },
+        f.project && canEdit() && summarise(data.lines.filter((l) => l.project_name === f.project)).diff > 0.5 ? h('button', { class: 'btn warn', onClick: () => openEscalate({ run, project: f.project, lines: data.lines.filter((l) => l.project_name === f.project), onSent: () => {} }) }, icon('mail'), 'Escalate this project') : null,
         h('button', { class: 'btn', onClick: () => exportCsv() }, icon('download'), 'Export CSV'),
         canEdit() ? h('button', { class: 'btn primary', onClick: addLine }, icon('plus'), 'Add line') : null));
     // week chips + column toggles
@@ -75,7 +77,7 @@ export async function render(root, params) {
         f.weeks = new Set(weekList.filter((w) => w >= win.reconcile_from && w <= win.reconcile_to)); buildControls(); draw(); } }, `${f.group} window`) : null,
       h('span', { style: { width: '14px' } }),
       h('span', { class: 'small muted', style: { alignSelf: 'center', marginRight: '4px' } }, 'Show:'),
-      [['weeks', 'Weekly hours'], ['variance', 'Over / under hours'], ['pay', 'Pay detail']].map(([k, t]) => h('button', { class: 'chip' + (f.cols[k] ? ' on' : ''), onClick: () => { f.cols[k] = !f.cols[k]; buildControls(); draw(); } }, t)));
+      [['weeks', 'Weekly hours'], ['variance', 'Over / under hours'], ['pay', 'Pay detail'], ['leave', 'Leave & SSP']].map(([k, t]) => h('button', { class: 'chip' + (f.cols[k] ? ' on' : ''), onClick: () => { f.cols[k] = !f.cols[k]; try { localStorage.setItem('payroll.cols', JSON.stringify(f.cols)); } catch { /* private mode */ } buildControls(); draw(); } }, t)));
   }
 
   // ---------- columns ----------
@@ -90,7 +92,8 @@ export async function render(root, params) {
     if (run.stream === 'monthly') cols.push({ k: 'budgeted_hours', label: 'Budget h/wk', num: true, edit: 'number', fmt: hrs });
     if (f.cols.weeks) for (const w of weekList) if (f.weeks.has(w)) cols.push({ week: w, label: dm(w), num: true, cls: 'wk' });
     if (!allWeeksOn()) cols.push({ sel: 'hours', label: 'Hours (selected)', num: true, cls: 'wk total' }, { sel: 'pay', label: 'Est. pay (selected)', num: true, cls: 'wk total' });
-    cols.push({ k: 'actual_hours', label: 'Hours', num: true, fmt: hrs, total: true, cls: 'total' }, { k: 'leave_hours', label: 'Leave h', num: true, fmt: hrs, total: true });
+    cols.push({ k: 'actual_hours', label: 'Hours', num: true, fmt: hrs, total: true, cls: 'total' }, { k: 'leave_hours', label: 'Paid leave h', num: true, fmt: hrs, total: true });
+    if (f.cols.leave) cols.push({ k: 'unpaid_leave_hours', label: 'Unpaid leave h', num: true, fmt: hrs, total: true }, { k: 'ssp_days', label: 'SSP days', num: true, total: true }, { k: 'ssp_pay', label: 'SSP £', num: true, fmt: money, total: true });
     if (f.cols.variance) cols.push({ k: 'over_hours', label: 'Over h', num: true, fmt: hrs, total: true }, { k: 'less_hours', label: 'Under h', num: true, fmt: hrs, total: true, neg: true });
     if (f.cols.pay) cols.push({ k: 'hourly_pay', label: 'Hourly pay', num: true, fmt: money, total: true }, { k: 'fixed_pay', label: 'Fixed pay', num: true, fmt: money, edit: 'number', nullable: true, total: true }, { k: 'leave_pay', label: 'Leave pay', num: true, fmt: money, edit: 'number', total: true });
     cols.push({ k: 'addition', label: 'Addition', num: true, fmt: money, edit: 'number', total: true }, { k: 'deduction', label: 'Deduction', num: true, fmt: money, edit: 'number', total: true },

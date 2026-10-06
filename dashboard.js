@@ -1,7 +1,8 @@
 // Dashboard: where is this pay run, what needs attention, and a one-click way into the detail.
-import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun } from './api.js';
-import { h, clear, money, hrs, dm, dmy, addDays, ago, debounce, natCompare, confirmBox, toast, icon } from './ui.js';
-import { ctx, currentRun, runPicker } from './ctx.js';
+import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun, loadSignals, loadProjects } from './api.js';
+import { h, clear, money, hrs, dm, dmy, addDays, ago, debounce, natCompare, confirmBox, toast, icon, donut, ring, PALETTE, initials } from './ui.js';
+import { ctx, currentRun, runPicker, escalationCfg } from './ctx.js';
+import { openEscalate, pocFor, summarise } from './escalate.js';
 import { go } from './app.js';
 import { openLineDrawer } from './line-drawer.js';
 
@@ -19,7 +20,7 @@ export async function render(root) {
   }
 
   // state that survives a refresh (so a live update does not reset what you were looking at)
-  const S = { run: null, lines: [], weeksByLine: new Map(), periods: [], view: 'group', projectSort: 'cost', sort: { key: 'pay_group', dir: 1 }, hit: -1 };
+  const S = { run: null, lines: [], weeksByLine: new Map(), periods: [], signals: { timesheets: [], leave: [], escalations: [], provider: 0, exports: [] }, projects: [], view: 'group', projectSort: 'cost', sort: { key: 'pay_group', dir: 1 }, hit: -1 };
   const body = h('div');
 
   // ---------- instant search (kept outside `body` so typing is never interrupted by a refresh) ----------
@@ -127,20 +128,57 @@ export async function render(root) {
     try { await cfg.fn(run.id); ctx.runs = await loadRuns(); toast(cfg.done, 'ok'); await load(); } catch (e) { toast(e.message || String(e), 'err'); }
   }
 
-  function statusCard() {
+  function heroCard(A) {
     const run = S.run, st = run.status || 'ready';
-    const meta = [run.stream === 'monthly' ? 'Monthly' : 'Fortnightly', run.period_start ? `${dmy(run.period_start)} – ${dmy(run.period_end)}` : ''].filter(Boolean).join(' · ');
+    const meta = [run.stream === 'monthly' ? 'Monthly payroll' : 'Fortnightly payroll', run.period_start ? `${dmy(run.period_start)} – ${dmy(run.period_end)}` : ''].filter(Boolean).join(' · ');
+    const used = A.budget > 0 ? (A.gross / A.budget) * 100 : 0;
     const note = st === 'locked' ? `🔒 Locked by ${who(run.locked_by_email)}${run.locked_at ? ', ' + ago(run.locked_at) : ''}. Nobody can change this pay run until an admin unlocks it.`
-      : st === 'approved' ? `✓ Approved by ${who(run.approved_by_email)}${run.approved_at ? ', ' + ago(run.approved_at) : ''}. Any edit or re-import withdraws the approval, so it always means “nothing has changed since”.`
-      : ctx.isAdmin ? 'Check the figures below. When you are happy with them, approve the pay run.' : 'An admin approves and locks a pay run once it has been checked.';
+      : st === 'approved' ? `✓ Approved by ${who(run.approved_by_email)}${run.approved_at ? ', ' + ago(run.approved_at) : ''}. Any edit or re-import withdraws the approval.`
+      : ctx.isAdmin ? 'The team keeps updating this pay run while it is open. When it has been checked, approve it, then lock it.' : 'The team updates this pay run while it is open. An admin approves and locks it once checked.';
+    return h('div', { class: 'hero' },
+      h('div', { class: 'row wrap', style: { justifyContent: 'space-between', alignItems: 'flex-start', gap: '18px' } },
+        h('div', { style: { minWidth: '260px', flex: 1 } },
+          h('div', { class: 'eyebrow' }, 'Current pay run'), h('h2', null, run.label), h('div', { class: 'meta' }, meta, ' ', h('span', { class: 'pill st-' + st }, STATUS_TEXT[st] || st)),
+          h('div', { class: 'big' }, money(A.gross)), h('div', { class: 'bigsub' }, `gross pay · ${A.paid.size.toLocaleString()} people paid · ${S.lines.length.toLocaleString()} lines`),
+          h('div', { class: 'hstats' },
+            h('div', null, h('b', null, money(A.budget)), h('span', null, 'budgeted')),
+            h('div', null, h('b', null, (A.diff > 0 ? '+' : '') + money(A.diff)), h('span', null, A.diff > 0.5 ? 'over budget' : A.diff < -0.5 ? 'under budget' : 'on budget')),
+            h('div', null, h('b', null, hrs(A.hours).replace(/\B(?=(\d{3})+(?!\d))/g, ',')), h('span', null, 'hours worked'))),
+          h('div', { class: 'note' }, note)),
+        h('div', { class: 'row', style: { gap: '22px', alignItems: 'center' } },
+          ring(used, { size: 124, thick: 13, color: used > 100.5 ? '#fda4af' : '#5eead4', label: A.budget ? Math.round(used) + '%' : '–', sub: 'of budget used' }),
+          h('div', { class: 'stack', style: { gap: '8px' } },
+            ctx.isAdmin && st === 'ready' ? h('button', { class: 'btn primary', onClick: () => transition('approve') }, '✓ Approve pay run') : null,
+            ctx.isAdmin && st === 'approved' ? [h('button', { class: 'btn primary', onClick: () => transition('lock') }, '🔒 Lock pay run'), h('button', { class: 'btn', onClick: () => transition('unlock') }, 'Withdraw approval')] : null,
+            ctx.isAdmin && st === 'locked' ? h('button', { class: 'btn', onClick: () => transition('unlock') }, '🔓 Unlock') : null,
+            h('a', { class: 'btn', href: '#/payroll' }, 'Open payroll →')))));
+  }
+
+  // The checklist a payroll run goes through (modelled on a "pre-payroll data" tracker)
+  function trackerCard(A) {
+    const run = S.run, st = run.status || 'ready', sg = S.signals;
+    const ts = sg.timesheets, tsDone = ts.filter((t) => t.status === 'checked').length, tsKeyed = ts.filter((t) => t.status === 'keyed').length, tsNew = ts.filter((t) => t.status === 'received').length;
+    const expected = S.lines.filter((l) => num(l.budget_hours_total) > 0 || (l.fixed_pay !== null && l.fixed_pay !== undefined));
+    const withHours = expected.filter((l) => num(l.actual_hours) > 0 || (l.fixed_pay !== null && l.fixed_pay !== undefined)).length;
+    const lv = sg.leave, paidL = lv.filter((x) => x.paid && !x.ssp).length, sspL = lv.filter((x) => x.ssp).length, unpL = lv.filter((x) => !x.paid && !x.ssp).length;
+    const escProjects = new Set(sg.escalations.map((e) => e.project_name)).size;
+    const within = S.lines.length - A.over - A.under;
+    const steps = [
+      { icon: 'file', label: 'Timesheets', href: '#/timesheets', sub: ts.length ? `${ts.length} received` : 'none yet', status: ts.length && tsDone === ts.length ? 'done' : ts.length ? 'active' : 'idle', counts: ts.length ? [[tsDone, 'g', 'checked'], [tsKeyed, 'b', 'keyed, to check'], [tsNew, 'r', 'received, not keyed']] : [[0, 'n']] },
+      { icon: 'clock', label: 'Hours entered', href: '#/payroll', sub: expected.length ? `${withHours} of ${expected.length} lines` : 'no budgets set', status: expected.length && withHours === expected.length ? 'done' : withHours ? 'active' : 'idle', counts: [[withHours, 'g', 'lines with hours'], [expected.length - withHours, 'r', 'lines with a budget but no hours yet']] },
+      { icon: 'sun', label: 'Leave & SSP', href: '#/leave', sub: lv.length ? `${lv.length} records` : 'none recorded', status: lv.length ? 'done' : 'idle', counts: [[paidL, 'g', 'paid leave'], [sspL, 'b', 'SSP days'], [unpL, 'a', 'unpaid leave']] },
+      { icon: 'alert', label: 'Budget review', href: '#/payroll?status=Over', sub: A.over ? `${A.over} lines over` : 'all within budget', status: A.over === 0 ? 'done' : escProjects ? 'active' : 'idle', counts: [[within, 'g', 'within budget'], [A.over, 'r', 'over budget'], [escProjects, 'b', 'projects escalated']] },
+      { icon: 'users', label: 'Provider report', href: '#/journal', sub: sg.provider ? `${sg.provider} payslips` : 'not imported', status: sg.provider ? 'done' : 'idle', counts: [[sg.provider, sg.provider ? 'g' : 'n', 'payslips imported']] },
+      { icon: 'book', label: 'Manual journal', href: '#/journal', sub: sg.exports.length ? `exported ${ago(sg.exports[0].created_at)}` : 'not exported', status: sg.exports.length ? 'done' : 'idle', counts: [[sg.exports.length, sg.exports.length ? 'g' : 'n', 'exports']] },
+      { icon: st === 'locked' ? 'lock' : 'check', label: 'Approve & lock', href: '#/dashboard', sub: STATUS_TEXT[st], status: st === 'locked' ? 'locked' : st === 'approved' ? 'active' : 'idle', counts: [[st === 'locked' ? 1 : 0, st === 'locked' ? 'g' : 'n', 'locked']] },
+    ];
     return h('div', { class: 'card pad', style: { marginBottom: '14px' } },
-      h('div', { class: 'row wrap', style: { justifyContent: 'space-between', alignItems: 'flex-start' } },
-        h('div', null, h('span', { class: 'pill st-' + st }, STATUS_TEXT[st] || st), h('h2', { style: { margin: '8px 0 2px', fontSize: '19px' } }, run.label), h('div', { class: 'muted' }, meta)),
-        h('div', { class: 'row wrap' },
-          ctx.isAdmin && st === 'ready' ? h('button', { class: 'btn primary', onClick: () => transition('approve') }, '✓ Approve pay run') : null,
-          ctx.isAdmin && st === 'approved' ? [h('button', { class: 'btn primary', onClick: () => transition('lock') }, '🔒 Lock pay run'), h('button', { class: 'btn', onClick: () => transition('unlock') }, 'Withdraw approval')] : null,
-          ctx.isAdmin && st === 'locked' ? h('button', { class: 'btn', onClick: () => transition('unlock') }, '🔓 Unlock') : null)),
-      stepper(st), h('div', { class: 'small muted', style: { marginTop: '6px' } }, note));
+      h('div', { class: 'row', style: { marginBottom: '6px' } }, h('h3', { class: 'grow', style: { margin: 0 } }, 'Payroll checklist'), h('span', { class: 'small muted' }, 'Green = done · blue = in progress · red = needs attention')),
+      h('div', { class: 'tracker' }, steps.map((s, i) => h('a', { class: 'tnode ' + s.status, href: s.href },
+        h('div', { class: 'tdot' }, s.status === 'done' ? icon('check') : s.status === 'locked' ? icon('lock') : String(i + 1)),
+        h('div', { class: 'tlabel' }, s.label),
+        h('div', { class: 'tcounts' }, s.counts.map(([n, cls, title]) => h('span', { class: 'cn ' + cls, title: title || '' }, String(n)))),
+        h('div', { class: 'tsub' }, s.sub)))));
   }
 
   // ---------- chart (budget vs actual) ----------
@@ -223,25 +261,58 @@ export async function render(root) {
         : h('div', { class: 'muted' }, 'Nothing to review'));
   }
 
+  // ---------- donuts + escalation ----------
+  function donutsCard(A) {
+    const sspH = S.signals.leave.filter((x) => x.ssp).reduce((s, x) => s + num(x.hours), 0);
+    const unpaid = S.lines.reduce((s, l) => s + num(l.unpaid_leave_hours), 0);
+    const mix = [{ label: 'Worked', value: A.hours, color: '#6c5ce7' }, { label: 'Paid leave', value: A.leave, color: '#2563eb' }, { label: 'SSP (sick)', value: sspH, color: '#e84393' }, { label: 'Unpaid leave', value: unpaid, color: '#94a3b8' }];
+    const groups = [...A.groups.values()].sort((a, b) => natCompare(a.label, b.label));
+    const mixTotal = mix.reduce((s, p) => s + p.value, 0);
+    return h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(380px,1fr))', marginBottom: '14px' } },
+      h('div', { class: 'card pad' }, h('h3', null, 'Where the hours went'), h('div', { class: 'chartrow' },
+        donut(mix, { center: hrs(mixTotal).replace(/\B(?=(\d{3})+(?!\d))/g, ','), sub: 'total hours' }),
+        h('div', { class: 'legend-list' }, mix.map((p) => h('div', { class: 'li' }, h('i', { class: 'sw', style: { background: p.color } }), p.label, h('b', null, hrs(p.value) + ' h')))))),
+      h('div', { class: 'card pad' }, h('h3', null, 'Cost by pay date'), h('div', { class: 'chartrow' },
+        donut(groups.map((g, i) => ({ label: g.label, value: g.gross, color: PALETTE[i % PALETTE.length] })), { center: money(A.gross), sub: 'gross pay' }),
+        h('div', { class: 'legend-list' }, groups.map((g, i) => h('div', { class: 'li click', onClick: () => go('payroll', { group: g.label }) }, h('i', { class: 'sw', style: { background: PALETTE[i % PALETTE.length] } }), g.label, h('b', null, money(g.gross))))))));
+  }
+  function escalationCard(A) {
+    const cfg = escalationCfg();
+    const list = [...A.projects.values()].filter((p) => p.diff > Math.max(0.5, cfg.threshold_gbp > 0 ? 0.5 : 0.5)).sort((a, b) => b.diff - a.diff).slice(0, 8);
+    const sent = new Map(); for (const e of S.signals.escalations) sent.set(e.project_name, (sent.get(e.project_name) || 0) + 1);
+    return h('div', { class: 'card pad', style: { marginBottom: '14px' } },
+      h('div', { class: 'row', style: { marginBottom: '6px' } }, h('div', { class: 'grow' }, h('h3', { style: { margin: 0 } }, 'Projects over budget'), h('div', { class: 'small muted' }, 'One click emails the project’s point of contact (area manager) and logs it.')), h('a', { class: 'small', href: '#/projects' }, 'Manage contacts →')),
+      list.length ? list.map((p) => {
+        const poc = pocFor(p.label, S.projects), big = p.diff >= cfg.threshold_gbp || (p.budget > 0 && (p.diff / p.budget) * 100 >= cfg.threshold_pct);
+        return h('div', { class: 'poc' }, h('span', { class: 'avatar' }, initials(poc.name || p.label)),
+          h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', null, p.label), h('div', { class: 'small muted' }, poc.name ? `${poc.name}${poc.email ? ' · ' + poc.email : ''}` : (poc.email || 'no contact saved yet'))),
+          sent.get(p.label) ? h('span', { class: 'badge-sent' }, `sent ${sent.get(p.label)}×`) : null,
+          h('div', { class: 'right', style: { minWidth: '110px' } }, h('b', { class: 'neg' }, '+' + money(p.diff)), h('div', { class: 'small muted' }, p.budget > 0 ? ((p.diff / p.budget) * 100).toFixed(0) + '% over' : 'no budget')),
+          ctx.canEdit ? h('button', { class: 'btn sm ' + (big ? 'warn' : ''), onClick: () => openEscalate({ run: S.run, project: p.label, lines: S.lines.filter((l) => l.project_name === p.label), onSent: softReload }) }, icon('mail'), 'Escalate') : null);
+      }) : h('div', { class: 'muted' }, '✓ No project is over budget.'));
+  }
+
   // ---------- page ----------
   function paint() {
     const run = S.run, A = analyse();
     const pct = A.budget ? (A.diff / A.budget) * 100 : 0;
     const vTone = A.diff > 0.5 ? 'neg' : A.diff < -0.5 ? 'pos' : '';
+    const kpi2 = (cls, ic, label, value, sub, o) => { const el = kpi(label, value, sub, o); el.classList.add('c', cls); el.insertBefore(h('div', { class: 'kic' }, icon(ic)), el.firstChild); return el; };
+    const lv = S.signals.leave, sspPay = S.lines.reduce((s, l) => s + num(l.ssp_pay), 0);
     clear(body).append(
-      statusCard(),
+      heroCard(A), trackerCard(A),
       h('div', { class: 'grid kpis k8' },
-        kpi('Gross pay', money(A.gross), `${S.lines.length.toLocaleString()} payroll lines`, { page: 'payroll' }),
-        kpi('Budgeted pay', money(A.budget), 'weekly budgets / fixed pay', { page: 'payroll' }),
-        kpi('Difference', money(A.diff), `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.diff > 0.5 ? 'over budget' : A.diff < -0.5 ? 'under budget' : 'on budget'}`, { cls: vTone, page: 'payroll', params: { status: A.diff >= 0 ? 'Over' : 'Under' } }),
-        kpi('People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
-        kpi('Hours worked', hrs(A.hours).replace(/\B(?=(\d{3})+(?!\d))/g, ','), `plus ${hrs(A.leave)} leave hours`, { page: 'explorer' }),
-        kpi('Over budget', String(A.over), `${money(A.overSum)} over`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
-        kpi('Under budget', String(A.under), `${money(A.underSum)} under`, { page: 'payroll', params: { status: 'Under' } }),
-        kpi('Average per person', A.paid.size ? money(A.gross / A.paid.size) : money(0), 'gross pay ÷ people paid', { page: 'payroll' })),
-      chartCard(A), tableCard(A),
+        kpi2('kc-violet', 'pound', 'Gross pay', money(A.gross), `${S.lines.length.toLocaleString()} payroll lines`, { page: 'payroll' }),
+        kpi2('kc-blue', 'grid', 'Budgeted pay', money(A.budget), 'weekly budgets / fixed pay', { page: 'payroll' }),
+        kpi2(A.diff > 0.5 ? 'kc-red' : 'kc-green', 'trend', 'Difference', money(A.diff), `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.diff > 0.5 ? 'over budget' : A.diff < -0.5 ? 'under budget' : 'on budget'}`, { cls: vTone, page: 'payroll', params: { status: A.diff >= 0 ? 'Over' : 'Under' } }),
+        kpi2('kc-teal', 'users', 'People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
+        kpi2('kc-amber', 'clock', 'Hours worked', hrs(A.hours).replace(/\B(?=(\d{3})+(?!\d))/g, ','), `plus ${hrs(A.leave)} paid leave hours`, { page: 'explorer' }),
+        kpi2('kc-red', 'alert', 'Over budget', String(A.over), `${money(A.overSum)} over`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
+        kpi2('kc-green', 'check', 'Under budget', String(A.under), `${money(A.underSum)} under`, { page: 'payroll', params: { status: 'Under' } }),
+        kpi2('kc-pink', 'sun', 'Leave & SSP', String(lv.length), `SSP ${money(sspPay)} · ${lv.filter((x) => !x.paid && !x.ssp).length} unpaid`, { page: 'leave' })),
+      donutsCard(A), escalationCard(A), chartCard(A), tableCard(A),
       h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', marginBottom: '14px' } }, attentionCard(A), exceptionCard('Largest overspends', 'Over'), exceptionCard('Largest underspends', 'Under')),
-      ctx.isAdmin && run.status !== 'locked' ? h('div', { class: 'card pad', style: { marginTop: '22px' } }, h('h3', null, 'Administration'), h('p', { class: 'small muted' }, 'Deleting a pay run removes all of its lines for everyone. You can also re-import a file on the Import page.'),
+      ctx.isAdmin && run.status !== 'locked' ? h('div', { class: 'card pad', style: { marginTop: '22px' } }, h('h3', null, 'Administration'), h('p', { class: 'small muted' }, 'Deleting a pay run removes all of its lines for everyone.'),
         h('button', { class: 'btn danger sm', onClick: async () => {
           if (await confirmBox('Delete this pay run?', `“${run.label}” and all of its lines will be permanently removed for every user.`, 'Delete run', true)) {
             try { await deleteRun(run.id); ctx.runs = await loadRuns(); toast('Run deleted', 'ok'); location.reload(); } catch (e) { toast(e.message, 'err'); }
@@ -251,8 +322,8 @@ export async function render(root) {
 
   async function load() {
     S.run = currentRun();
-    const [data, periods] = await Promise.all([loadRunData(S.run.id), loadPeriods(S.run.id)]);
-    S.run = currentRun(); S.lines = data.lines; S.weeksByLine = data.weeksByLine; S.periods = periods;
+    const [data, periods, signals, projects] = await Promise.all([loadRunData(S.run.id), loadPeriods(S.run.id), loadSignals(S.run.id).catch(() => S.signals), loadProjects().catch(() => [])]);
+    S.run = currentRun(); S.lines = data.lines; S.weeksByLine = data.weeksByLine; S.periods = periods; S.signals = signals; S.projects = projects;
     paint();
   }
   const softReload = debounce(() => load().catch(console.error), 700);

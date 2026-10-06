@@ -208,3 +208,138 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
     throw e;
   }
 }
+
+// =====================================================================================================
+// v3: settings, leave, timesheets, hours upload, provider report, journal, escalations
+// =====================================================================================================
+const ymd = (d) => String(d).slice(0, 10);
+const mondayOf = (iso) => { const d = new Date(ymd(iso) + 'T00:00:00Z'); return new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10); };
+const plus = (iso, n) => new Date(Date.parse(ymd(iso) + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+
+// ---------- settings + leave types ----------
+export const loadSettings = async () => Object.fromEntries(ok(await sb.from('app_settings').select('*')).map((r) => [r.key, r.value]));
+export const saveSetting = async (key, value) => ok(await sb.from('app_settings').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' }));
+export const loadLeaveTypes = async () => ok(await sb.from('leave_types').select('*').order('sort'));
+export const saveLeaveType = async (row) => ok(await sb.from('leave_types').upsert(row, { onConflict: 'code' }));
+export const deleteLeaveType = async (code) => ok(await sb.from('leave_types').delete().eq('code', code));
+
+// ---------- leave ----------
+export const loadLineLeave = async (lineId) => ok(await sb.from('v_leave').select('*').eq('line_id', lineId).order('leave_date'));
+export const loadRunLeave = async (runId) => fetchAll(() => sb.from('v_leave').select('*').eq('run_id', runId).order('leave_date').order('id'));
+export const deleteLeave = async (id) => ok(await sb.from('line_leave').delete().eq('id', id));
+// Make sure a weekly row exists for every week touched, so itemised paid leave counts towards that week.
+async function ensureWeeks(lineId, dates) {
+  const weeks = [...new Set(dates.map(mondayOf))];
+  const have = new Set(ok(await sb.from('line_weeks').select('week_start').eq('line_id', lineId).in('week_start', weeks)).map((w) => ymd(w.week_start)));
+  const missing = weeks.filter((w) => !have.has(w));
+  if (!missing.length) return;
+  const line = ok(await sb.from('payroll_lines').select('budgeted_hours').eq('id', lineId).maybeSingle());
+  ok(await sb.from('line_weeks').insert(missing.map((w) => ({ line_id: lineId, week_start: w, delivered: 0, leave: 0, budget: num0(line?.budgeted_hours), in_window: true }))));
+}
+const num0 = (v) => +v || 0;
+export async function addLeave(lineId, entries) {
+  if (!entries.length) return;
+  await ensureWeeks(lineId, entries.map((e) => e.date));
+  ok(await sb.from('line_leave').upsert(entries.map((e) => ({ line_id: lineId, leave_date: e.date, hours: num0(e.hours), type_code: e.type, amount: e.amount ?? null, note: e.note || null })), { onConflict: 'line_id,leave_date' }));
+}
+
+// ---------- hours + timesheets: one writer used by timesheets and by "upload hours" ----------
+// entries: [{project, site, employee_name, ni, rate, contract_type, pay_group, days:[{date, hours|null}], leave:[{date,hours,type,amount,note}]}]
+export async function commitEntries(run, entries, onProgress = () => {}) {
+  const lines = await fetchAll(() => sb.from('payroll_lines').select('id,employee_name,ni_number,project_name,site_name,budgeted_hours').eq('run_id', run.id).order('id'));
+  const projects = await loadProjects(); const aliases = await loadAliases();
+  const projKey = new Map(projects.map((p) => [p.name_key, p]));
+  const aliasProj = new Map(aliases.map((a) => [a.alias_key, projects.find((p) => p.id === a.project_id)]));
+  const emps = await fetchAll(() => sb.from('employees').select('id,name_key,ni_number').order('id'));
+  const byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e.id])), byName = new Map(emps.map((e) => [e.name_key, e.id]));
+  const out = { created: 0, updated: 0, days: 0, leave: 0, lineIds: [] };
+  let i = 0;
+  for (const e of entries) {
+    const nk = normKey(e.employee_name), pk = normKey(e.project), sk = normKey(e.site || '');
+    const cands = lines.filter((l) => normKey(l.project_name) === pk && ((e.ni && l.ni_number === e.ni) || normKey(l.employee_name) === nk));
+    let line = cands.find((l) => normKey(l.site_name || '') === sk) || (sk ? null : cands[0]) || (cands.length && !sk ? cands[0] : null);
+    if (!line && cands.length && !e.site) line = cands[0];
+    if (!line) {
+      let empId = (e.ni && byNi.get(e.ni)) || byName.get(nk) || null;
+      if (!empId) { empId = crypto.randomUUID(); ok(await sb.from('employees').insert({ id: empId, full_name: e.employee_name, name_key: nk, ni_number: e.ni || null })); byName.set(nk, empId); if (e.ni) byNi.set(e.ni, empId); }
+      const pr = projKey.get(pk) || aliasProj.get(pk) || null;
+      const id = crypto.randomUUID();
+      const row = { id, run_id: run.id, employee_id: empId, project_id: pr?.id ?? null, project_name: e.project, site_name: e.site || null, employee_name: e.employee_name, ni_number: e.ni || null,
+        contract_type: e.contract_type || 'Hourly', hourly_rate: num0(e.rate), budgeted_hours: num0(e.budget_hours), pay_group: e.pay_group || pr?.pay_group || null, status: 'timesheet' };
+      ok(await sb.from('payroll_lines').insert(row));
+      line = { id, employee_name: e.employee_name, ni_number: e.ni || null, project_name: e.project, site_name: e.site || null, budgeted_hours: row.budgeted_hours };
+      lines.push(line); out.created++;
+    } else {
+      out.updated++;
+      if (e.rate && num0(e.rate) > 0) ok(await sb.from('payroll_lines').update({ hourly_rate: num0(e.rate) }).eq('id', line.id));
+    }
+    out.lineIds.push(line.id);
+    const days = (e.days || []).filter((d) => d.date);
+    const put = days.filter((d) => d.hours !== null && d.hours !== undefined && !Number.isNaN(+d.hours) && +d.hours > 0);
+    const del = days.filter((d) => !put.includes(d)).map((d) => d.date);
+    if (del.length) ok(await sb.from('daily_hours').delete().eq('line_id', line.id).in('work_date', del));
+    if (put.length) { ok(await sb.from('daily_hours').upsert(put.map((d) => ({ line_id: line.id, work_date: d.date, hours: +d.hours, note: d.note || null })), { onConflict: 'line_id,work_date' })); out.days += put.length; }
+    if ((e.clearLeaveDates || []).length) ok(await sb.from('line_leave').delete().eq('line_id', line.id).in('leave_date', e.clearLeaveDates));
+    const allDates = [...days.map((d) => d.date), ...(e.leave || []).map((l) => l.date)];
+    if (days.length) {                                                       // weekly totals follow the days
+      const weeks = [...new Set(days.map((d) => mondayOf(d.date)))];
+      const lo = weeks.slice().sort()[0], hi = plus(weeks.slice().sort().pop(), 6);
+      const stored = ok(await sb.from('daily_hours').select('work_date,hours').eq('line_id', line.id).gte('work_date', lo).lte('work_date', hi));
+      const have = ok(await sb.from('line_weeks').select('*').eq('line_id', line.id).in('week_start', weeks));
+      for (const w of weeks) {
+        const sum = stored.filter((s) => mondayOf(s.work_date) === w).reduce((a, s) => a + num0(s.hours), 0);
+        const cur = have.find((x) => ymd(x.week_start) === w);
+        ok(await sb.from('line_weeks').upsert({ line_id: line.id, week_start: w, delivered: Math.round(sum * 100) / 100, leave: cur ? cur.leave : 0, budget: cur ? cur.budget : num0(line.budgeted_hours), in_window: cur ? cur.in_window : true, variance_override: cur ? cur.variance_override : null }, { onConflict: 'line_id,week_start' }));
+      }
+    }
+    if ((e.leave || []).length) { await addLeave(line.id, e.leave); out.leave += e.leave.length; }
+    void allDates; onProgress(++i / entries.length, `${e.employee_name}`);
+  }
+  return out;
+}
+
+// ---------- timesheets (record + file) ----------
+export const loadTimesheets = async (runId) => ok(await sb.from('timesheets').select('*').eq('run_id', runId).order('week_start', { ascending: false }).order('created_at', { ascending: false }));
+export const saveTimesheet = async (row) => { if (row.id) { const { id, ...rest } = row; ok(await sb.from('timesheets').update(rest).eq('id', id)); return id; } const id = crypto.randomUUID(); ok(await sb.from('timesheets').insert({ id, ...row })); return id; };
+export const deleteTimesheet = async (ts) => { if (ts.file_path) { try { await sb.storage.from('timesheets').remove([ts.file_path]); } catch { /* keep going */ } } ok(await sb.from('timesheets').delete().eq('id', ts.id)); };
+export async function uploadTimesheetFile(runId, file) {
+  const path = `${runId}/${Date.now()}_${file.name.replace(/[^\w.\-]+/g, '_')}`;
+  const { error } = await sb.storage.from('timesheets').upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw new Error('Could not store the file: ' + error.message);
+  return path;
+}
+export async function timesheetUrl(path) { const { data, error } = await sb.storage.from('timesheets').createSignedUrl(path, 3600); if (error) throw new Error(error.message); return data.signedUrl; }
+
+// ---------- pay runs from scratch ----------
+export async function createRun({ stream, label, period_start, period_end }) {
+  return ok(await sb.from('pay_runs').insert({ stream, label, period_start, period_end, source_file: 'created in Payroll Online', status: 'ready' }).select().single());
+}
+
+// ---------- provider report + journal ----------
+export const loadProvider = async (runId) => fetchAll(() => sb.from('provider_pay').select('*').eq('run_id', runId).order('department').order('id'));
+export async function replaceProvider(runId, rows, source) {
+  ok(await sb.from('provider_pay').delete().eq('run_id', runId));
+  for (const part of chunk(rows.map((r) => ({ run_id: runId, source_file: source, ...r })), 400)) ok(await sb.from('provider_pay').insert(part));
+}
+export const loadJournalExtra = async (runId) => ok(await sb.from('journal_extra').select('*').eq('run_id', runId).order('created_at'));
+export const addJournalExtra = async (row) => ok(await sb.from('journal_extra').insert(row));
+export const deleteJournalExtra = async (id) => ok(await sb.from('journal_extra').delete().eq('id', id));
+export const loadJournalExports = async (runId) => ok(await sb.from('journal_exports').select('*').eq('run_id', runId).order('created_at', { ascending: false }));
+export const logJournalExport = async (row) => ok(await sb.from('journal_exports').insert(row));
+
+// ---------- escalations ----------
+export const loadEscalations = async (runId) => ok(await sb.from('escalations').select('*').eq('run_id', runId).order('created_at', { ascending: false }));
+export const addEscalation = async (row) => ok(await sb.from('escalations').insert(row));
+export const saveProjectContact = async (id, patch) => ok(await sb.from('projects').update(patch).eq('id', id));
+
+// ---------- the numbers for the readiness tracker ----------
+export async function loadSignals(runId) {
+  const [ts, lv, es, pv, je] = await Promise.all([
+    fetchAll(() => sb.from('timesheets').select('id,status,kind').eq('run_id', runId).order('id')),
+    fetchAll(() => sb.from('v_leave').select('id,paid,ssp,hours').eq('run_id', runId).order('id')),
+    loadEscalations(runId).catch(() => []),
+    fetchAll(() => sb.from('provider_pay').select('id').eq('run_id', runId).order('id')),
+    loadJournalExports(runId).catch(() => []),
+  ]);
+  return { timesheets: ts, leave: lv, escalations: es, provider: pv.length, exports: je };
+}

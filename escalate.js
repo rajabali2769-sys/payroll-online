@@ -1,0 +1,69 @@
+// "Budget is over -> one click -> email the point of contact (area manager) and log that it was done."
+import { loadProjects, addEscalation, saveProjectContact, loadEscalations } from './api.js';
+import { h, modal, money, toast, dmy, ago } from './ui.js';
+import { ctx, escalationCfg } from './ctx.js';
+import { normKey } from './parsers.js';
+
+export const pocFor = (project, projects) => {
+  const p = projects.find((x) => x.name_key === normKey(project));
+  return { project: p || null, name: p?.manager || '', email: p?.manager_email || escalationCfg().default_email || '' };
+};
+
+export function summarise(lines) {
+  const gross = lines.reduce((s, l) => s + (+l.gross_pay || 0), 0), budget = lines.reduce((s, l) => s + (+l.budgeted_pay || 0), 0);
+  const over = lines.filter((l) => +l.difference > 0.5).sort((a, b) => +b.difference - +a.difference);
+  return { gross, budget, diff: gross - budget, pct: budget ? ((gross - budget) / budget) * 100 : 0, over };
+}
+
+export async function openEscalate({ run, project, lines, onSent }) {
+  const [projects, history] = await Promise.all([loadProjects(), loadEscalations(run.id).catch(() => [])]);
+  const poc = pocFor(project, projects), S = summarise(lines), cfg = escalationCfg();
+  const me = (ctx.me && (ctx.me.full_name || ctx.me.email.split('@')[0])) || 'Payroll team';
+  const first = (poc.name || 'there').split(' ')[0];
+  const body0 = `Hi ${first},\n\nThe ${run.label} payroll for ${project} is over budget.\n\n` +
+    `Budget:  ${money(S.budget)}\nPayroll cost so far:  ${money(S.gross)}\nOver by:  ${money(S.diff)}${S.budget ? ` (${S.pct.toFixed(1)}%)` : ''}\n\n` +
+    (S.over.length ? `Biggest overspends:\n${S.over.slice(0, 6).map((l) => `• ${l.employee_name}${l.site_name ? ' (' + l.site_name + ')' : ''}: ${money(l.difference)} over`).join('\n')}\n\n` : '') +
+    `Please review the hours and let me know whether this should be challenged, or approved, before payroll is submitted.\n\nThanks,\n${me}`;
+  const prior = history.filter((e) => normKey(e.project_name) === normKey(project));
+
+  modal(`Escalate ${project}`, (close) => {
+    const to = h('input', { type: 'email', value: poc.email, placeholder: 'area.manager@company.com' });
+    const cc = h('input', { type: 'email', value: cfg.cc || '', placeholder: 'optional' });
+    const subject = h('input', { type: 'text', value: `Budget over: ${project} – ${run.label} (${money(S.diff)} over)` });
+    const body = h('textarea', { rows: 13, style: { fontFamily: 'inherit' } }, body0);
+    const remember = h('input', { type: 'checkbox', checked: !poc.project?.manager_email });
+    const err = h('div', { class: 'notice err hidden' });
+
+    const log = async (how) => {
+      if (!to.value.trim()) { err.textContent = 'Add the email address of the point of contact first.'; err.classList.remove('hidden'); return false; }
+      try {
+        await addEscalation({ run_id: run.id, project_name: project, sent_to: to.value.trim(), cc: cc.value.trim() || null, subject: subject.value, body: body.value, over_amount: Math.round(S.diff * 100) / 100,
+          budget: Math.round(S.budget * 100) / 100, actual: Math.round(S.gross * 100) / 100, sent_by_email: ctx.me?.email || null });
+        if (remember.checked && poc.project && to.value.trim() !== poc.project.manager_email) { try { await saveProjectContact(poc.project.id, { manager_email: to.value.trim() }); } catch { /* not allowed - fine */ } }
+        toast(how === 'mail' ? 'Escalation logged — finish sending in your email app' : 'Escalation logged', 'ok');
+        onSent && onSent();
+        return true;
+      } catch (e) { err.textContent = e.message || String(e); err.classList.remove('hidden'); return false; }
+    };
+    return h('div', { class: 'stack' },
+      poc.name || poc.email ? h('div', { class: 'poc', style: { border: 0, padding: 0 } }, h('span', { class: 'avatar' }, (poc.name || poc.email)[0].toUpperCase()), h('div', null, h('b', null, poc.name || 'Point of contact'), h('div', { class: 'small muted' }, poc.email || 'no email saved yet')))
+        : h('div', { class: 'notice warn' }, 'No point of contact is saved for this project yet. Type their email below and tick the box to remember it (you can manage them under Projects & POCs).'),
+      prior.length ? h('div', { class: 'small muted' }, `Already escalated ${prior.length}× — last ${ago(prior[0].created_at)} to ${prior[0].sent_to}.`) : null,
+      h('div', { class: 'form-grid' }, h('label', { class: 'fld' }, 'To', to), h('label', { class: 'fld' }, 'CC', cc)),
+      h('label', { class: 'fld' }, 'Subject', subject), h('label', { class: 'fld' }, 'Message', body),
+      h('label', { class: 'row small', style: { gap: '6px' } }, remember, 'Remember this email as the point of contact for this project'),
+      err,
+      h('div', { class: 'row wrap', style: { justifyContent: 'flex-end' } },
+        h('button', { class: 'btn', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn', title: 'Use this if you sent it another way', onClick: async () => { if (await log('log')) close(); } }, 'Just log it'),
+        h('button', { class: 'btn', onClick: async () => { try { await navigator.clipboard.writeText(`${subject.value}\n\n${body.value}`); toast('Message copied', 'ok'); } catch { toast('Could not copy', 'err'); } } }, 'Copy'),
+        h('button', { class: 'btn warn', onClick: async () => {
+          if (!(await log('mail'))) return;
+          const text = body.value.length > 1500 ? body.value.slice(0, 1450) + '\n\n(…full detail in Payroll Online)' : body.value;
+          const href = `mailto:${encodeURIComponent(to.value.trim())}?${cc.value.trim() ? 'cc=' + encodeURIComponent(cc.value.trim()) + '&' : ''}subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(text)}`;
+          window.__lastMailto = href;
+          const a = h('a', { href, style: { display: 'none' } }); document.body.append(a); a.click(); a.remove();   // a link click opens the mail app without leaving this page
+          close();
+        } }, '✉ Email the area manager')));
+  }, { wide: true });
+}

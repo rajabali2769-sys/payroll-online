@@ -49,6 +49,18 @@ const ICONS = {
   folder: 'M3 6h6l2 2h10v11H3z',
   clock: 'M12 7v5l3 2M12 3a9 9 0 100 18 9 9 0 000-18z',
   users: 'M16 11a4 4 0 10-8 0 4 4 0 008 0zM4 20c0-3.3 3.6-5 8-5s8 1.7 8 5',
+  file: 'M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9zM14 3v6h6M8 13h8M8 17h5',
+  sun: 'M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4M12 8a4 4 0 100 8 4 4 0 000-8z',
+  book: 'M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2zM4 19a2 2 0 012-2h13M9 7h6',
+  mail: 'M3 6h18v12H3zM3 7l9 6 9-6',
+  alert: 'M12 3l10 18H2zM12 10v5M12 18v.01',
+  check: 'M5 12l5 5 9-10',
+  gear: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12a7 7 0 00-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 00-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 00-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 005 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z',
+  pound: 'M16 6a4 4 0 00-8 1v4H6m2 0v5c0 2-1 3-2 3h12M8 11h6',
+  camera: 'M4 8h3l2-2h6l2 2h3v11H4zM12 17a3.5 3.5 0 100-7 3.5 3.5 0 000 7z',
+  trend: 'M3 17l6-6 4 4 7-8M15 7h5v5',
+  lock: 'M6 11h12v9H6zM8 11V8a4 4 0 018 0v3',
+  grid: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
   x: 'M6 6l12 12M18 6L6 18', plus: 'M12 5v14M5 12h14', download: 'M12 4v12M7 11l5 5 5-5M4 20h16', trash: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13',
 };
 export const icon = (name) => h('span', { html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${ICONS[name] || ''}"/></svg>`, style: { display: 'inline-flex' } });
@@ -87,3 +99,20 @@ export function downloadCSV(filename, rows) {
 export const statusPill = (s) => h('span', { class: 'pill ' + String(s || 'within').toLowerCase() }, s === 'Over' ? 'Over budget' : s === 'Under' ? 'Under budget' : 'Within budget');
 export const natCompare = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
 export const mondayOf = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7; return new Date(d.getTime() - dow * 86400000).toISOString().slice(0, 10); };
+
+// ---------- colours + charts ----------
+export const PALETTE = ['#12a3a1', '#6c5ce7', '#f39c12', '#e84393', '#1f7ae0', '#00b894', '#e17055', '#636e72'];
+// Donut chart: parts = [{label, value, color}]; center = big text in the middle, sub = small text under it
+export function donut(parts, { size = 170, thick = 24, center = '', sub = '' } = {}) {
+  const total = parts.reduce((s, p) => s + Math.max(0, +p.value || 0), 0), r = (size - thick) / 2, C = 2 * Math.PI * r;
+  let off = 0;
+  const arcs = total > 0 ? parts.filter((p) => +p.value > 0).map((p) => { const len = (p.value / total) * C; const a = `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${p.color}" stroke-width="${thick}" stroke-dasharray="${Math.max(0, len - 1.5)} ${C - Math.max(0, len - 1.5)}" stroke-dashoffset="${-off}" transform="rotate(-90 ${size / 2} ${size / 2})"><title>${p.label}</title></circle>`; off += len; return a; }).join('')
+    : `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#e6ecec" stroke-width="${thick}"/>`;
+  return h('div', { class: 'donut', style: { width: size + 'px', height: size + 'px' }, html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#eef2f3" stroke-width="${thick}"/>${arcs}</svg><div class="dc"><b>${center}</b><span>${sub}</span></div>` });
+}
+// Progress ring (0-100+) used for "budget used"
+export function ring(pct, { size = 112, thick = 12, color = '#12a3a1', label = '', sub = '' } = {}) {
+  const r = (size - thick) / 2, C = 2 * Math.PI * r, p = Math.max(0, Math.min(pct, 100)) / 100;
+  return h('div', { class: 'donut ring', style: { width: size + 'px', height: size + 'px' }, html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="${thick}"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="${thick}" stroke-linecap="round" stroke-dasharray="${p * C} ${C}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg><div class="dc"><b>${label}</b><span>${sub}</span></div>` });
+}
+export const initials = (s) => String(s || '?').split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((x) => x[0].toUpperCase()).join('');

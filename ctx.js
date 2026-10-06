@@ -5,6 +5,9 @@ import { dmy } from './ui.js';
 export const ctx = {
   me: null,            // profile row {id,email,role}
   runs: [],
+  settings: {},        // app_settings rows by key
+  leaveTypes: [],
+  schemaOutdated: false,
   runId: (() => { try { return localStorage.getItem('payroll.runId'); } catch { return null; } })(),
   get canEdit() { return !!this.me && (this.me.role === 'admin' || this.me.role === 'editor'); },
   get isAdmin() { return !!this.me && this.me.role === 'admin'; },
@@ -23,3 +26,9 @@ export function runPicker(onChange) {
     ctx.runs.map((r) => h('option', { value: r.id, selected: cur && r.id === cur.id }, `${r.stream === 'monthly' ? 'Monthly' : 'Fortnightly'} · ${runLabel(r)}${statusTag(r)}`)));
   return h('label', { class: 'fld w2' }, 'Pay run', sel);
 }
+
+// Settings with safe defaults (so the app still works before anyone has opened the Settings page)
+export const payRules = () => ({ ssp_weekly_rate: 123.25, ssp_days: 5, ...(ctx.settings.pay_rules || {}) });
+export const escalationCfg = () => ({ default_email: '', cc: '', threshold_gbp: 250, threshold_pct: 5, ...(ctx.settings.escalation || {}) });
+export const journalCfg = () => ctx.settings.journal || {};
+export const leaveType = (code) => ctx.leaveTypes.find((t) => t.code === code);

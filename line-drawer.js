@@ -1,7 +1,7 @@
 // Side panel for one payroll line: weekly figures, day-by-day hours, notes, history.
-import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit } from './api.js';
+import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit, loadLineLeave, addLeave, deleteLeave } from './api.js';
 import { h, clear, money, hrs, dm, dmy, addDays, mondayOf, DOW, toast, confirmBox, statusPill, ago, icon } from './ui.js';
-import { ctx, runEditable } from './ctx.js';
+import { ctx, runEditable, payRules } from './ctx.js';
 
 export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
   const overlay = h('div', { class: 'overlay' });
@@ -13,10 +13,11 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   document.body.append(overlay);
 
-  let line, weeks, days, audit = [];
+  let line, weeks, days, audit = [], leave = [];
   let edit = ctx.canEdit;
   const refresh = async () => {
     [line, weeks, days] = await Promise.all([loadLine(lineId), loadLineWeeks(lineId), loadDays(lineId)]);
+    try { leave = await loadLineLeave(lineId); } catch { leave = []; }
     edit = !!line && runEditable(line.run_id);
     if (ctx.canEdit) { try { audit = await loadAudit({ lineId, limit: 12 }); } catch { audit = []; } }
     draw(); onChange && onChange(line);
@@ -83,6 +84,15 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
           h('div', { class: 'daygrid' }, cells));
       }),
 
+      h('h4', null, 'Leave & absence'),
+      h('div', { class: 'small muted', style: { marginBottom: '6px' } }, `Paid leave ${hrs(line.leave_hours)} h · unpaid ${hrs(line.unpaid_leave_hours)} h · SSP ${line.ssp_days || 0} day${+line.ssp_days === 1 ? '' : 's'} = ${money(line.ssp_pay)}`),
+      leave.length ? h('div', { class: 'tablewrap auto' }, h('table', { class: 't' },
+        h('thead', null, h('tr', null, ['Date', 'Type', 'Hours', 'Amount', 'Note', ''].map((t, i) => h('th', { class: i === 2 || i === 3 ? 'num' : '' }, t)))),
+        h('tbody', null, leave.map((lv) => h('tr', null, h('td', null, dmy(lv.leave_date)), h('td', null, h('span', { class: 'tag', style: { background: lv.color || '#6c5ce7' } }, lv.type_name)),
+          h('td', { class: 'num' }, lv.ssp ? '—' : hrs(lv.hours)), h('td', { class: 'num' }, lv.ssp ? money(lv.amount ?? payRules().ssp_weekly_rate / payRules().ssp_days) + (lv.amount === null || lv.amount === undefined ? '' : ' ✎') : lv.paid ? '' : '£0.00'),
+          h('td', { class: 'muted' }, lv.note || ''), h('td', null, edit ? h('button', { class: 'btn sm danger', onClick: () => guard(() => deleteLeave(lv.id)) }, '×') : null)))))) : h('div', { class: 'muted small' }, 'No leave recorded for this line.'),
+      edit ? leaveForm() : null,
+
       h('h4', null, 'Pay inputs & notes'),
       h('div', { class: 'form-grid' },
         fld('Fixed pay (£)', num(line.fixed_pay, (v) => guard(() => updateLine(lineId, { fixed_pay: v })), { allowNull: true, w: 120 })),
@@ -104,6 +114,32 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
         if (await confirmBox('Delete this line?', `${line.employee_name} · ${line.project_name} will be removed from this pay run for everyone.`, 'Delete line', true)) {
           try { await deleteLine(lineId); close(); onDelete && onDelete(lineId); toast('Line deleted', 'ok'); } catch (e) { toast(e.message, 'err'); } } } }, icon('trash'), 'Delete line')) : null,
     );
+  }
+
+  function leaveForm() {
+    const types = ctx.leaveTypes.filter((t) => t.active !== false);
+    const type = h('select', null, types.map((t) => h('option', { value: t.code }, t.name)));
+    const from = h('input', { type: 'date' }), to = h('input', { type: 'date' });
+    const hours = h('input', { type: 'number', step: 'any', value: String(Math.round(((+line.budgeted_hours || 0) / 5 || 5) * 100) / 100 || 5), style: { width: '90px' } });
+    const amount = h('input', { type: 'number', step: 'any', placeholder: 'default', style: { width: '100px' } });
+    const note = h('input', { type: 'text', placeholder: 'note (optional)' });
+    const hint = h('div', { class: 'small muted' });
+    const sync = () => { const t = types.find((x) => x.code === type.value); amount.parentElement.classList.toggle('hidden', !(t && t.ssp)); hours.parentElement.classList.toggle('hidden', !!(t && t.ssp));
+      hint.textContent = t && t.ssp ? `SSP is paid per day: ${money(payRules().ssp_weekly_rate / payRules().ssp_days)} by default (£${payRules().ssp_weekly_rate}/week ÷ ${payRules().ssp_days}). Enter an amount to override, e.g. 80% of average earnings.` : t && !t.paid ? 'Unpaid leave: counted for the record, nothing is paid.' : 'Paid at the hourly rate and counts towards the budget.'; };
+    type.addEventListener('change', sync);
+    const wrap = h('div', { class: 'card pad', style: { marginTop: '10px', background: '#faf9ff' } },
+      h('div', { class: 'row wrap', style: { alignItems: 'flex-end' } },
+        h('label', { class: 'fld' }, 'Type', type), h('label', { class: 'fld' }, 'From', from), h('label', { class: 'fld' }, 'To (optional)', to),
+        h('label', { class: 'fld' }, 'Hours per day', hours), h('label', { class: 'fld' }, 'SSP £ per day', amount), h('label', { class: 'fld grow' }, 'Note', note),
+        h('button', { class: 'btn primary sm', onClick: () => {
+          if (!from.value) return toast('Choose the first date', 'err');
+          const end = to.value || from.value; if (end < from.value) return toast('“To” is before “From”', 'err');
+          const dates = []; for (let d = from.value; d <= end; d = addDays(d, 1)) { const dow = new Date(d + 'T00:00:00Z').getUTCDay(); if ((dow !== 0 && dow !== 6) || from.value === end) dates.push(d); }
+          const t = types.find((x) => x.code === type.value);
+          guard(() => addLeave(lineId, dates.map((date) => ({ date, hours: t && t.ssp ? 0 : +hours.value || 0, type: type.value, amount: t && t.ssp && amount.value !== '' ? +amount.value : null, note: note.value.trim() })))).then(() => toast(`${dates.length} day${dates.length === 1 ? '' : 's'} added`, 'ok'));
+        } }, 'Add leave')), hint);
+    setTimeout(sync, 0);
+    return wrap;
   }
   const mini = (l, v, c) => h('div', { class: 'card kpi' }, h('div', { class: 'l' }, l), h('div', { class: 'v ' + (c || ''), style: { fontSize: '19px' } }, v));
   const fld = (label, input) => h('label', { class: 'fld' }, label, input);
