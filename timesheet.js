@@ -82,17 +82,17 @@ export function parseTimesheetText(text) {
 // 3. Hours upload from scratch (one row per person per day, or per week)
 // ---------------------------------------------------------------------------------------------
 export const NI_RE = /^[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]$/i;
-export const HOURS_TEMPLATE_HEADERS = ['Employee Name', 'NI Number', 'Project', 'Site', 'Date', 'Hours', 'Leave Type', 'Hourly Rate', 'Contract Type', 'Pay Date'];
+export const HOURS_TEMPLATE_HEADERS = ['Employee Name', 'NI Number', 'Project', 'Site', 'Date', 'Time In', 'Time Out', 'Break (mins)', 'Hours', 'Ad-hoc Hours', 'Leave Type', 'Hourly Rate', 'Contract Type', 'Pay Date'];
 const hKey = (s) => normKey(s).replace(/[^a-z]/g, '');
 const ALIASES = { employeename: 'name', name: 'name', employee: 'name', ninumber: 'ni', ni: 'ni', nationalinsurancenumber: 'ni', project: 'project', projectname: 'project', site: 'site', sitename: 'site',
-  date: 'date', workdate: 'date', hours: 'hours', hoursworked: 'hours', leavetype: 'leave', leave: 'leave', hourlyrate: 'rate', rate: 'rate', contracttype: 'type', type: 'type', paydate: 'group', paygroup: 'group', firstname: 'first', surname: 'last' };
+  date: 'date', workdate: 'date', hours: 'hours', hoursworked: 'hours', timein: 'tin', in: 'tin', start: 'tin', timeout: 'tout', out: 'tout', finish: 'tout', end: 'tout', break: 'brk', breakmins: 'brk', adhochours: 'adh', adhoc: 'adhflag', leavetype: 'leave', leave: 'leave', hourlyrate: 'rate', rate: 'rate', contracttype: 'type', type: 'type', paydate: 'group', paygroup: 'group', firstname: 'first', surname: 'last' };
 export function parseHoursRows(rows2d) {
-  const hi = rows2d.findIndex((r) => (r || []).some((c) => ALIASES[hKey(c)] === 'date') && (r || []).some((c) => ALIASES[hKey(c)] === 'hours'));
-  if (hi < 0) throw new Error('Could not find the header row. The file needs at least the columns Employee Name, Project, Date and Hours.');
+  const hi = rows2d.findIndex((r) => (r || []).some((c) => ALIASES[hKey(c)] === 'date') && ((r || []).some((c) => ALIASES[hKey(c)] === 'hours') || ((r || []).some((c) => ALIASES[hKey(c)] === 'tin') && (r || []).some((c) => ALIASES[hKey(c)] === 'tout'))));
+  if (hi < 0) throw new Error('Could not find the header row. The file needs the columns Employee Name, Project, Date and either Hours or Time In and Time Out.');
   const col = {}; rows2d[hi].forEach((c, i) => { const k = ALIASES[hKey(c)]; if (k && col[k] === undefined) col[k] = i; });
   if (col.name === undefined && !(col.first !== undefined && col.last !== undefined)) throw new Error('Missing an "Employee Name" column.');
   if (col.project === undefined) throw new Error('Missing a "Project" column.');
-  const errors = [], lines = new Map(); let rowsRead = 0, total = 0;
+  const errors = [], lines = new Map(); let rowsRead = 0, total = 0, adhocTotal = 0;
   rows2d.slice(hi + 1).forEach((r, idx) => {
     if (!r || r.every((c) => c === null || c === undefined || c === '')) return;
     const rowNo = hi + idx + 2; rowsRead++;
@@ -102,24 +102,34 @@ export function parseHoursRows(rows2d) {
     const okISO = (x) => (x && !Number.isNaN(Date.parse(x + 'T00:00:00Z')) && new Date(x + 'T00:00:00Z').toISOString().slice(0, 10) === x ? x : null);
     const date = okISO(headerToISO(r[col.date])) || (typeof r[col.date] === 'number' ? new Date(Math.round((r[col.date] - 25569) * 86400000)).toISOString().slice(0, 10) : null);
     const leave = col.leave !== undefined ? norm(r[col.leave]).toUpperCase() : '';
-    const hours = num(r[col.hours]);
+    const tcell = (v) => { if (v === null || v === undefined || v === '') return ''; if (typeof v === 'number' && v >= 0 && v < 1.0001) { const m = Math.round(v * 1440); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; } return norm(v); };
+    const tin = col.tin !== undefined ? tcell(r[col.tin]) : '', tout = col.tout !== undefined ? tcell(r[col.tout]) : '', brk = col.brk !== undefined ? num(r[col.brk]) : 0;
+    const hoursBlank = col.hours === undefined || r[col.hours] === null || r[col.hours] === undefined || r[col.hours] === '';
+    let hours = 0, timeBad = false;
+    if (!hoursBlank) hours = num(r[col.hours]);
+    else if (tin && tout) { const c = parseDayCell(`${tin}-${tout}`, { breakMins: brk }); if (c.hours === null) timeBad = true; else hours = c.hours; }
+    else if (tin || tout) timeBad = true;
+    let adhoc = col.adh !== undefined ? num(r[col.adh]) : 0;
+    if (col.adhflag !== undefined && /^(y|yes|true|1|adhoc|ad-hoc)$/i.test(norm(r[col.adhflag]))) { adhoc += hours; hours = 0; }
     const bad = [];
     if (!name) bad.push('no employee name'); if (!project) bad.push('no project');
     if (!date) bad.push('date not understood (use dd/mm/yyyy)');
+    if (timeBad) bad.push('Time In and Time Out must both be filled in as times (e.g. 08:30 and 16:30)');
     if (ni && !NI_RE.test(ni)) bad.push(`NI number "${ni}" does not look right`);
-    if (!(hours >= 0 && hours <= 24)) bad.push('hours must be between 0 and 24');
+    if (!(hours >= 0 && hours <= 24) || !(adhoc >= 0 && adhoc <= 24)) bad.push('hours must be between 0 and 24');
     if (bad.length) { errors.push({ row: rowNo, name, text: bad.join('; ') }); return; }
     const key = [ni || normKey(name), normKey(project), normKey(site)].join('|');
-    const L = lines.get(key) || { employee_name: name, ni: ni || null, project, site: site || null, rate: null, contract_type: null, pay_group: null, days: new Map(), leave: new Map() };
+    const L = lines.get(key) || { employee_name: name, ni: ni || null, project, site: site || null, rate: null, contract_type: null, pay_group: null, days: new Map(), leave: new Map(), adhoc: new Map() };
     if (col.rate !== undefined && r[col.rate] !== '' && r[col.rate] != null && num(r[col.rate]) > 0) L.rate = num(r[col.rate]);
     if (col.type !== undefined && norm(r[col.type])) L.contract_type = norm(r[col.type])[0].toUpperCase() + norm(r[col.type]).slice(1).toLowerCase();
     if (col.group !== undefined && norm(r[col.group])) L.pay_group = norm(r[col.group]);
-    if (leave) L.leave.set(date, { date, hours, type: leave }); else { L.days.set(date, (L.days.get(date) || 0) + hours); total += hours; }
+    if (leave) L.leave.set(date, { date, hours, type: leave });
+    else { if (hours > 0 || (!adhoc)) { L.days.set(date, (L.days.get(date) || 0) + hours); total += hours; } if (adhoc > 0) { L.adhoc.set(date, (L.adhoc.get(date) || 0) + adhoc); adhocTotal += adhoc; } }
     lines.set(key, L);
   });
-  const out = [...lines.values()].map((L) => ({ ...L, days: [...L.days].map(([date, hours]) => ({ date, hours })).sort((a, b) => a.date.localeCompare(b.date)), leave: [...L.leave.values()] }));
-  const dates = out.flatMap((l) => [...l.days.map((d) => d.date), ...l.leave.map((d) => d.date)]).sort();
-  return { lines: out, errors, rowsRead, totalHours: r2(total), period_start: dates[0] || null, period_end: dates[dates.length - 1] || null };
+  const out = [...lines.values()].map((L) => ({ ...L, days: [...L.days].map(([date, hours]) => ({ date, hours })).sort((a, b) => a.date.localeCompare(b.date)), leave: [...L.leave.values()], adhoc: [...L.adhoc].map(([date, hours]) => ({ date, hours })) }));
+  const dates = out.flatMap((l) => [...l.days.map((d) => d.date), ...l.leave.map((d) => d.date), ...l.adhoc.map((d) => d.date)]).sort();
+  return { lines: out, errors, rowsRead, totalHours: r2(total), adhocHours: r2(adhocTotal), period_start: dates[0] || null, period_end: dates[dates.length - 1] || null };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -231,4 +241,48 @@ export function buildEstimatedJournal(lines, stream, rules = {}, settings = {}, 
   void sumDeb;
   return { lines: out, debit, credit, difference: (c(debit) - c(credit)) / 100, balanced: c(debit) === c(credit), unexplained: [], unexplainedTotal: 0, estimate: true,
     totals: { gross: rows.reduce((s, r) => s + c(r.gross), 0) / 100, er_nic: rows.reduce((s, r) => s + c(r.er_nic), 0) / 100, er_pension: rows.reduce((s, r) => s + c(r.er_pension), 0) / 100, statutory: stat, people: new Set(lines.map((l) => l.ni_number || l.employee_name)).size } };
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// 6. Budgets and employee lists (Excel / pasted text)
+// ---------------------------------------------------------------------------------------------
+const BKEYS = { project: 'project', projectname: 'project', weeklybudgetedhours: 'hours', weeklyhours: 'hours', budgetedhours: 'hours', hours: 'hours', weeklybudget: 'hours', clientrate: 'rate', chargerate: 'rate', rate: 'rate',
+  employee: 'name', employeename: 'name', name: 'name', ni: 'ni', ninumber: 'ni', email: 'email', emailaddress: 'email', phone: 'phone', mobile: 'phone', site: 'site', contracttype: 'type', hourlyrate: 'hrate', status: 'status', active: 'status' };
+function headed(rows2d, need) {
+  const hi = rows2d.findIndex((r) => (r || []).some((c) => BKEYS[hKey(c)] === need[0]) && need.slice(1).some((k) => (r || []).some((c) => BKEYS[hKey(c)] === k)));
+  if (hi < 0) return null; const col = {}; rows2d[hi].forEach((c, i) => { const k = BKEYS[hKey(c)]; if (k && col[k] === undefined) col[k] = i; }); return { hi, col };
+}
+// "Project  |  Weekly Budgeted Hours" -> [{project_name, name_key, weekly_hours, client_rate}]
+export function parseProjectBudgetRows(rows2d) {
+  const hd = headed(rows2d, ['project', 'hours']); if (!hd) throw new Error('Could not find the columns “Project” and “Weekly Budgeted Hours”.');
+  const out = [], errors = [];
+  rows2d.slice(hd.hi + 1).forEach((r, i) => { if (!r || r.every((c) => c === null || c === '' || c === undefined)) return; const name = norm(r[hd.col.project]); const hrs = r[hd.col.hours]; const n = typeof hrs === 'number' ? hrs : parseFloat(String(hrs ?? '').replace(/,/g, ''));
+    if (!name) return; if (!Number.isFinite(n) || n < 0) { errors.push({ row: hd.hi + i + 2, text: `${name}: “${hrs}” is not a number of hours` }); return; }
+    out.push({ project_name: name, name_key: normKey(name), weekly_hours: n, client_rate: hd.col.rate !== undefined && r[hd.col.rate] !== '' && r[hd.col.rate] != null ? num(r[hd.col.rate]) : undefined }); });
+  return { rows: out, errors };
+}
+// "Employee | NI | Project | Weekly hours"
+export function parseEmployeeBudgetRows(rows2d) {
+  const hd = headed(rows2d, ['name', 'hours']); if (!hd || hd.col.project === undefined) throw new Error('Could not find the columns “Employee”, “Project” and “Weekly Hours”.');
+  const out = [], errors = [];
+  rows2d.slice(hd.hi + 1).forEach((r, i) => { if (!r || r.every((c) => c === null || c === '' || c === undefined)) return; const name = norm(r[hd.col.name]), project = norm(r[hd.col.project]), n = num(r[hd.col.hours]);
+    const ni = hd.col.ni !== undefined ? norm(r[hd.col.ni]).replace(/\s+/g, '').toUpperCase() : ''; if (!name && !project) return;
+    if (!name || !project) { errors.push({ row: hd.hi + i + 2, text: 'needs an employee and a project' }); return; } if (ni && !NI_RE.test(ni)) { errors.push({ row: hd.hi + i + 2, text: `${name}: NI number "${ni}" does not look right` }); return; }
+    out.push({ employee_name: name, name_key: normKey(name), ni_number: ni || null, project_name: project, project_key: normKey(project), weekly_hours: n }); });
+  return { rows: out, errors };
+}
+// Active employee list: Name | NI | Email | Phone | Project | Site | Hourly Rate | Contract Type | Status
+export function parseEmployeeRows(rows2d) {
+  const hd = headed(rows2d, ['name', 'ni', 'email', 'project']); if (!hd) throw new Error('Could not find an “Employee Name” column (plus NI Number, Email or Project).');
+  const out = [], errors = [];
+  rows2d.slice(hd.hi + 1).forEach((r, i) => { if (!r || r.every((c) => c === null || c === '' || c === undefined)) return; const name = norm(r[hd.col.name]); if (!name) return;
+    const ni = hd.col.ni !== undefined ? norm(r[hd.col.ni]).replace(/\s+/g, '').toUpperCase() : '', email = hd.col.email !== undefined ? norm(r[hd.col.email]).toLowerCase() : '';
+    if (ni && !NI_RE.test(ni)) { errors.push({ row: hd.hi + i + 2, text: `${name}: NI number "${ni}" does not look right` }); return; } if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errors.push({ row: hd.hi + i + 2, text: `${name}: "${email}" is not an email` }); return; }
+    const st = hd.col.status !== undefined ? norm(r[hd.col.status]).toLowerCase() : '';
+    out.push({ full_name: name, name_key: normKey(name), ni_number: ni || null, email: email || null, phone: hd.col.phone !== undefined ? norm(r[hd.col.phone]) || null : null,
+      default_project: hd.col.project !== undefined ? norm(r[hd.col.project]) || null : null, default_site: hd.col.site !== undefined ? norm(r[hd.col.site]) || null : null,
+      default_rate: hd.col.hrate !== undefined && r[hd.col.hrate] !== '' && r[hd.col.hrate] != null ? num(r[hd.col.hrate]) : null, default_contract: hd.col.type !== undefined ? norm(r[hd.col.type]) || null : null,
+      active: !/^(inactive|leaver|left|no|false|0|terminated)$/.test(st) }); });
+  return { rows: out, errors };
 }

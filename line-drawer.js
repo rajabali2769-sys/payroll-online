@@ -1,5 +1,5 @@
 // Side panel for one payroll line: weekly figures, day-by-day hours, notes, history.
-import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit, loadLineLeave, addLeave, deleteLeave } from './api.js';
+import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit, loadLineLeave, addLeave, deleteLeave, loadLineAdhoc, addAdhoc, deleteAdhoc } from './api.js';
 import { h, clear, money, hrs, dm, dmy, addDays, mondayOf, DOW, toast, confirmBox, statusPill, ago, icon } from './ui.js';
 import { ctx, runEditable, payRules } from './ctx.js';
 
@@ -13,11 +13,12 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   document.body.append(overlay);
 
-  let line, weeks, days, audit = [], leave = [];
+  let line, weeks, days, audit = [], leave = [], adhoc = [];
   let edit = ctx.canEdit;
   const refresh = async () => {
     [line, weeks, days] = await Promise.all([loadLine(lineId), loadLineWeeks(lineId), loadDays(lineId)]);
     try { leave = await loadLineLeave(lineId); } catch { leave = []; }
+    try { adhoc = await loadLineAdhoc(lineId); } catch { adhoc = []; }
     edit = !!line && runEditable(line.run_id);
     if (ctx.canEdit) { try { audit = await loadAudit({ lineId, limit: 12 }); } catch { audit = []; } }
     draw(); onChange && onChange(line);
@@ -93,6 +94,12 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
           h('td', { class: 'muted' }, lv.note || ''), h('td', null, edit ? h('button', { class: 'btn sm danger', onClick: () => guard(() => deleteLeave(lv.id)) }, '×') : null)))))) : h('div', { class: 'muted small' }, 'No leave recorded for this line.'),
       edit ? leaveForm() : null,
 
+      h('h4', null, 'Ad-hoc hours (charged to the client)'),
+      h('div', { class: 'small muted', style: { marginBottom: '6px' } }, `${hrs(line.adhoc_hours)} ad-hoc hour${+line.adhoc_hours === 1 ? '' : 's'}${+line.adhoc_charge ? ' · to charge ' + money(line.adhoc_charge) : (line.client_rate ? '' : ' · no client rate set for this project (Budgets)')} · paid at the normal rate, never counted against the budget`),
+      adhoc.length ? h('div', { class: 'tablewrap auto' }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Date', 'Hours', 'Note', ''].map((t, i) => h('th', { class: i === 1 ? 'num' : '' }, t)))),
+        h('tbody', null, adhoc.map((x) => h('tr', null, h('td', null, dmy(x.work_date)), h('td', { class: 'num' }, hrs(x.hours)), h('td', { class: 'muted' }, x.note || ''), h('td', null, edit ? h('button', { class: 'btn sm danger', onClick: () => guard(() => deleteAdhoc(x.id)) }, '×') : null)))))) : (line.is_adhoc_line ? h('div', { class: 'muted small' }, 'This whole line is ad-hoc work (its name contains “ADHOC”).') : h('div', { class: 'muted small' }, 'No ad-hoc hours on this line.')),
+      edit && !line.is_adhoc_line ? adhocForm() : null,
+
       h('h4', null, 'Pay inputs & notes'),
       h('div', { class: 'form-grid' },
         fld('Fixed pay (£)', num(line.fixed_pay, (v) => guard(() => updateLine(lineId, { fixed_pay: v })), { allowNull: true, w: 120 })),
@@ -114,6 +121,13 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
         if (await confirmBox('Delete this line?', `${line.employee_name} · ${line.project_name} will be removed from this pay run for everyone.`, 'Delete line', true)) {
           try { await deleteLine(lineId); close(); onDelete && onDelete(lineId); toast('Line deleted', 'ok'); } catch (e) { toast(e.message, 'err'); } } } }, icon('trash'), 'Delete line')) : null,
     );
+  }
+
+
+  function adhocForm() {
+    const date = h('input', { type: 'date' }), hours = h('input', { type: 'number', step: 'any', placeholder: 'hours', style: { width: '90px' } }), note = h('input', { type: 'text', placeholder: 'what was it for? (optional)' });
+    return h('div', { class: 'row wrap', style: { marginTop: '8px', alignItems: 'flex-end' } }, h('label', { class: 'fld' }, 'Date', date), h('label', { class: 'fld' }, 'Ad-hoc hours', hours), h('label', { class: 'fld grow' }, 'Note', note),
+      h('button', { class: 'btn primary sm', onClick: () => { if (!date.value || !(+hours.value > 0)) return toast('Choose a date and the hours', 'err'); guard(() => addAdhoc(lineId, [{ date: date.value, hours: +hours.value, note: note.value.trim() }])).then(() => toast('Ad-hoc hours added', 'ok')); } }, 'Add ad-hoc'));
   }
 
   function leaveForm() {

@@ -252,7 +252,7 @@ export async function commitEntries(run, entries, onProgress = () => {}) {
   const aliasProj = new Map(aliases.map((a) => [a.alias_key, projects.find((p) => p.id === a.project_id)]));
   const emps = await fetchAll(() => sb.from('employees').select('id,name_key,ni_number').order('id'));
   const byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e.id])), byName = new Map(emps.map((e) => [e.name_key, e.id]));
-  const out = { created: 0, updated: 0, days: 0, leave: 0, lineIds: [] };
+  const out = { created: 0, updated: 0, days: 0, leave: 0, adhoc: 0, lineIds: [] };
   let i = 0;
   for (const e of entries) {
     const nk = normKey(e.employee_name), pk = normKey(e.project), sk = normKey(e.site || '');
@@ -293,6 +293,8 @@ export async function commitEntries(run, entries, onProgress = () => {}) {
       }
     }
     if ((e.leave || []).length) { await addLeave(line.id, e.leave); out.leave += e.leave.length; }
+    if ((e.clearAdhocDates || []).length) ok(await sb.from('adhoc_hours').delete().eq('line_id', line.id).in('work_date', e.clearAdhocDates));
+    if ((e.adhoc || []).length) { ok(await sb.from('adhoc_hours').upsert(e.adhoc.map((x) => ({ line_id: line.id, work_date: x.date, hours: +x.hours || 0, note: x.note || null })), { onConflict: 'line_id,work_date' })); out.adhoc += e.adhoc.length; }
     void allDates; onProgress(++i / entries.length, `${e.employee_name}`);
   }
   return out;
@@ -365,7 +367,7 @@ export async function callFn(name, body) {
   if (data && data.error) throw new Error(data.error);
   return data;
 }
-export const sendEmails = (kind, messages, extra = {}) => callFn('resend-email', { kind, messages, ...extra });
+export const sendEmails = (kind, messages, extra = {}) => callFn('send-email', { kind, messages, ...extra });
 export const aiReadTimesheet = async ({ path, text, hint }) => (await callFn('ai', { action: 'read_timesheet', path, text, hint })).result;
 export const aiChat = (messages, current_run) => callFn('ai', { action: 'chat', messages, current_run });
 
@@ -394,3 +396,51 @@ export async function uploadAiCopy(path, blob) {
 // ---------- v4.2: hours-based budget views for the dashboard ----------
 export const loadLinesForRuns = async (runIds) => fetchAll(() => sb.from('v_payroll_lines').select('id,run_id,run_label,stream,project_name,pay_group,employee_name,window_budget_hours,window_worked_hours,hours_difference,gross_pay,budgeted_pay,budget_status').in('run_id', runIds).order('id'));
 export const loadDailyForRun = async (runId) => fetchAll(() => sb.from('v_daily').select('work_date,hours,project_name,employee_name,hourly_rate,contract_type,line_id').eq('run_id', runId).order('work_date').order('line_id'));
+
+
+// =====================================================================================================
+// v4.3: project budgets, ad-hoc hours, active employees, employee budgets
+// =====================================================================================================
+export const loadProjectBudgets = async () => fetchAll(() => sb.from('project_budgets').select('*').order('project_name'));
+export const saveProjectBudget = async (row) => ok(await sb.from('project_budgets').upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: 'name_key' }));
+export async function saveProjectBudgets(rows) { for (const part of chunk(rows.map((r) => ({ ...r, updated_at: new Date().toISOString() })), 200)) ok(await sb.from('project_budgets').upsert(part, { onConflict: 'name_key' })); }
+export const deleteProjectBudget = async (key) => ok(await sb.from('project_budgets').delete().eq('name_key', key));
+export const loadProjectStatus = async (runId) => fetchAll(() => sb.from('v_project_status').select('*').eq('run_id', runId).order('project_key'));
+export const loadProjectStatusForRuns = async (ids) => fetchAll(() => sb.from('v_project_status').select('*').in('run_id', ids).order('project_key'));
+export const loadAdhoc = async (runId) => fetchAll(() => sb.from('v_adhoc').select('*').eq('run_id', runId).order('work_date').order('line_id'));
+export const loadLineAdhoc = async (lineId) => ok(await sb.from('adhoc_hours').select('*').eq('line_id', lineId).order('work_date'));
+export async function addAdhoc(lineId, entries) { if (entries.length) ok(await sb.from('adhoc_hours').upsert(entries.map((e) => ({ line_id: lineId, work_date: e.date, hours: +e.hours || 0, note: e.note || null })), { onConflict: 'line_id,work_date' })); }
+export const deleteAdhoc = async (id) => ok(await sb.from('adhoc_hours').delete().eq('id', id));
+
+export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract').order('full_name').order('id'));
+export const setEmployeeFields = async (id, patch) => ok(await sb.from('employees').update(patch).eq('id', id));
+// rows from parseEmployeeRows(); match on NI number, then on name; create anyone missing; only fill in what the file actually contains
+export async function saveEmployeesList(rows) {
+  const emps = await loadEmployeesFull(); const byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e])), byName = new Map(emps.map((e) => [e.name_key, e]));
+  let created = 0, updated = 0; const fresh = [];
+  for (const r of rows) {
+    const cur = (r.ni_number && byNi.get(r.ni_number)) || byName.get(r.name_key);
+    const patch = { active: r.active }; for (const k of ['email', 'phone', 'default_project', 'default_site', 'default_rate', 'default_contract', 'ni_number']) if (r[k] !== null && r[k] !== undefined && r[k] !== '') patch[k] = r[k];
+    if (r.active === false) patch.leaver_date = cur && cur.leaver_date ? cur.leaver_date : new Date().toISOString().slice(0, 10); else patch.leaver_date = null;
+    if (cur) { ok(await sb.from('employees').update(patch).eq('id', cur.id)); updated++; }
+    else { fresh.push({ id: crypto.randomUUID(), full_name: r.full_name, name_key: r.name_key, ...patch }); created++; }
+  }
+  for (const part of chunk(fresh, 200)) ok(await sb.from('employees').insert(part));
+  return { created, updated };
+}
+export const loadEmployeeBudgets = async () => fetchAll(() => sb.from('employee_budgets').select('*').order('employee_name').order('id'));
+export async function saveEmployeeBudgets(rows) { for (const part of chunk(rows.map((r) => ({ ...r, updated_at: new Date().toISOString() })), 200)) ok(await sb.from('employee_budgets').upsert(part, { onConflict: 'name_key,project_key' })); }
+export const deleteEmployeeBudget = async (id) => ok(await sb.from('employee_budgets').delete().eq('id', id));
+// Copy each person's budget onto their line(s) in a pay run (line budget + the weekly budget of every week)
+export async function applyEmployeeBudgets(run) {
+  const budgets = await loadEmployeeBudgets(); if (!budgets.length) return 0;
+  const lines = await fetchAll(() => sb.from('payroll_lines').select('id,employee_name,ni_number,project_name').eq('run_id', run.id).order('id'));
+  const byNi = new Map(budgets.filter((b) => b.ni_number).map((b) => [b.ni_number + '|' + b.project_key, b])), byName = new Map(budgets.map((b) => [b.name_key + '|' + b.project_key, b]));
+  const groups = new Map();
+  for (const l of lines) { const pk = normKey(l.project_name), b = (l.ni_number && byNi.get(l.ni_number + '|' + pk)) || byName.get(normKey(l.employee_name) + '|' + pk); if (b) { const k = String(+b.weekly_hours); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(l.id); } }
+  let n = 0;
+  for (const [hours, ids] of groups) for (const part of chunk(ids, 80)) { ok(await sb.from('payroll_lines').update({ budgeted_hours: +hours }).in('id', part)); ok(await sb.from('line_weeks').update({ budget: +hours }).in('line_id', part)); n += part.length; }
+  return n;
+}
+
+export const deleteAdhocDay = async (lineId, date) => ok(await sb.from('adhoc_hours').delete().eq('line_id', lineId).eq('work_date', date));

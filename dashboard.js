@@ -1,8 +1,9 @@
 // Dashboard: where is this pay run, what needs attention, and a one-click way into the detail.
-import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun, loadSignals, loadProjects, savePref, saveSetting, loadSettings, loadLinesForRuns, loadDailyForRun, loadRunLeave } from './api.js';
+import { loadRunData, loadPeriods, loadRuns, onLive, deleteRun, approveRun, lockRun, unlockRun, loadSignals, loadProjects, savePref, saveSetting, loadSettings, loadLinesForRuns, loadDailyForRun, loadRunLeave, loadProjectStatus, loadProjectStatusForRuns, loadAdhoc, loadEmployeesFull } from './api.js';
 import { WIDGETS, resolveLayout } from './widgets.js';
 import { h, clear, money, hrs, dm, dmy, addDays, ago, debounce, natCompare, confirmBox, toast, icon, donut, ring, PALETTE, initials, modal } from './ui.js';
 import { ctx, currentRun, runPicker, escalationCfg, payRules } from './ctx.js';
+import { normKey } from './parsers.js';
 import { openEscalate, pocFor, summarise } from './escalate.js';
 import { go } from './app.js';
 import { openLineDrawer } from './line-drawer.js';
@@ -23,6 +24,7 @@ export async function render(root) {
   // state that survives a refresh (so a live update does not reset what you were looking at)
   const S = { run: null, lines: [], weeksByLine: new Map(), periods: [], signals: { timesheets: [], leave: [], escalations: [], provider: 0, exports: [] }, projects: [], view: 'group', projectSort: 'cost', sort: { key: 'pay_group', dir: 1 }, hit: -1 };
   const body = h('div');
+  S.pstat = new Map(); S.adhoc = []; S.emps = [];
   S.focus = new Set(((ctx.prefs.dashboard || {}).focus) || []);
   const view = () => (S.focus.size ? S.lines.filter((l) => S.focus.has(l.project_name)) : S.lines);   // the project focus applies to every widget
 
@@ -93,9 +95,10 @@ export async function render(root) {
       if (l.budget_status === 'Over') G.over++;
       if (l.budget_status === 'Under') G.under++;
       A.groups.set(g, G);
-      const P = A.projects.get(l.project_name) || { label: l.project_name, lines: 0, gross: 0, budget: 0, diff: 0, bh: 0, wh: 0, dh: 0 };
-      P.lines++; P.gross += gross; P.budget += bud; P.diff += diff; P.bh += bh; P.wh += wh; P.dh += dh; A.projects.set(l.project_name, P);
-      A.gross += gross; A.budget += bud; A.diff += diff; A.hours += num(l.actual_hours); A.leave += num(l.leave_hours); A.bh += bh; A.wh += wh; A.dh += dh;
+      const pk = normKey(l.project_name);
+      const P = A.projects.get(pk) || { label: l.project_name, key: pk, lines: 0, gross: 0, budget: 0, diff: 0, bh: 0, wh: 0, dh: 0, src: 'lines' };
+      P.lines++; P.gross += gross; P.budget += bud; P.diff += diff; P.bh += bh; P.wh += wh; P.dh += dh; A.projects.set(pk, P);
+      A.gross += gross; A.budget += bud; A.diff += diff; A.hours += num(l.actual_hours); A.leave += num(l.leave_hours);
       const pid = l.employee_id || l.employee_name.toLowerCase(); A.people.add(pid); if (gross > 0) A.paid.add(pid);
       if (l.budget_status === 'Over') { A.over++; A.overSum += diff; A.overH += dh; if (dh >= thr) A.bigOver++; }
       if (l.budget_status === 'Under') { A.under++; A.underSum += diff; A.underH += dh; }
@@ -105,6 +108,15 @@ export async function render(root) {
       const ws = S.weeksByLine.get(l.id) || [];
       if (ws.some((w) => w.variance_override !== null && w.variance_override !== undefined)) A.overrides++;
       for (const w of ws) { if (!w.in_window) continue; A.wd += num(w.delivered); const W = A.weeks.get(w.week_start) || { label: w.week_start, budget: 0, actual: 0 }; W.budget += num(w.budget); W.actual += num(w.delivered) + num(w.leave); A.weeks.set(w.week_start, W); }
+    }
+    // Project-level decisions use the project's own weekly hours budget (from Budgets) when there is one
+    const tol = payRules().budget_tolerance_hours ?? 0.25; A.projOver = 0; A.projUnder = 0; A.projOverH = 0; A.adhocH = 0; A.adhocCharge = 0;
+    for (const P of A.projects.values()) {
+      const ps = S.pstat.get(P.key);
+      if (ps) { P.bh = num(ps.budget_hours); P.wh = num(ps.worked_hours); P.dh = num(ps.hours_difference); P.src = ps.budget_source; P.adhoc = num(ps.adhoc_hours); P.charge = num(ps.adhoc_charge); P.ps = ps; }
+      P.status = P.bh > 0 || P.src === 'project' ? (P.dh > tol ? 'Over' : P.dh < -tol ? 'Under' : 'Within') : (P.wh > 0 ? 'NoBudget' : 'Within');
+      A.bh += P.bh; A.wh += P.wh; A.dh += P.dh; A.adhocH += P.adhoc || 0; A.adhocCharge += P.charge || 0;
+      if (P.status === 'Over') { A.projOver++; A.projOverH += P.dh; } else if (P.status === 'Under') A.projUnder++;
     }
     return A;
   }
@@ -286,7 +298,7 @@ export async function render(root) {
   }
   function escalationCard(A) {
     const cfg = escalationCfg();
-    const list = [...A.projects.values()].filter((p) => p.dh > 0.25).sort((a, b) => b.dh - a.dh).slice(0, 8);
+    const list = [...A.projects.values()].filter((p) => p.status === 'Over').sort((a, b) => b.dh - a.dh).slice(0, 8);
     const sent = new Map(); for (const e of S.signals.escalations) sent.set(e.project_name, (sent.get(e.project_name) || 0) + 1);
     return h('div', { class: 'card pad', style: { marginBottom: '14px' } },
       h('div', { class: 'row', style: { marginBottom: '6px' } }, h('div', { class: 'grow' }, h('h3', { style: { margin: 0 } }, 'Projects over budget'), h('div', { class: 'small muted' }, 'One click emails the project’s point of contact (area manager) and logs it.')), h('a', { class: 'small', href: '#/projects' }, 'Manage contacts →')),
@@ -296,7 +308,7 @@ export async function render(root) {
           h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', null, p.label), h('div', { class: 'small muted' }, poc.name ? `${poc.name}${poc.email ? ' · ' + poc.email : ''}` : (poc.email || 'no contact saved yet'))),
           sent.get(p.label) ? h('span', { class: 'badge-sent' }, `sent ${sent.get(p.label)}×`) : null,
           h('div', { class: 'right', style: { minWidth: '110px' } }, h('b', { class: 'neg' }, '+' + hrs(p.dh) + ' h'), h('div', { class: 'small muted' }, p.bh > 0 ? ((p.dh / p.bh) * 100).toFixed(0) + '% over the hours budget' : 'no hours budget')),
-          ctx.canEdit ? h('button', { class: 'btn sm ' + (big ? 'warn' : ''), onClick: () => openEscalate({ run: S.run, project: p.label, lines: view().filter((l) => l.project_name === p.label), onSent: softReload }) }, icon('mail'), 'Escalate') : null);
+          ctx.canEdit ? h('button', { class: 'btn sm ' + (big ? 'warn' : ''), onClick: () => openEscalate({ run: S.run, project: p.label, lines: view().filter((l) => normKey(l.project_name) === p.key), pstat: p.ps || null, onSent: softReload }) }, icon('mail'), 'Escalate') : null);
       }) : h('div', { class: 'muted' }, '✓ No project is over budget.'));
   }
 
@@ -313,15 +325,20 @@ export async function render(root) {
     const pct = A.bh ? (A.dh / A.bh) * 100 : 0, vTone = A.dh > 0.25 ? 'neg' : A.dh < -0.25 ? 'pos' : '';
     const kpi2 = (cls, ic, label, value, sub, o) => { const el = kpi(label, value, sub, o); el.classList.add('c', cls); el.insertBefore(h('div', { class: 'kic' }, icon(ic)), el.firstChild); return el; };
     const lv = S.signals.leave, sspPay = view().reduce((s, l) => s + num(l.ssp_pay), 0), th = (n) => hrs(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const act = S.emps.filter((e) => e.active !== false), noHours = view().filter((l) => !l.is_adhoc_line && num(l.window_budget_hours) > 0 && num(l.actual_hours) === 0).length;
     return h('div', { class: 'grid kpis k8' },
       kpi2('kc-amber', 'clock', 'Hours worked', th(A.wh) + ' h', `of ${th(A.bh)} h budgeted · incl. paid leave`, { page: 'explorer' }),
-      kpi2('kc-blue', 'grid', 'Budget hours', th(A.bh) + ' h', 'weekly hours budget in the pay window', { page: 'payroll' }),
-      kpi2(A.dh > 0.25 ? 'kc-red' : 'kc-green', 'trend', 'Hours difference', (A.dh > 0 ? '+' : '') + th(A.dh) + ' h', `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.dh > 0.25 ? 'over the hours budget' : A.dh < -0.25 ? 'under the hours budget' : 'on the hours budget'}`, { cls: vTone, page: 'payroll', params: { status: A.dh >= 0 ? 'Over' : 'Under' } }),
-      kpi2('kc-red', 'alert', 'Over budget', String(A.over), `${th(A.overH)} h over · ${money(A.overSum)} of cost`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
-      kpi2('kc-green', 'check', 'Under budget', String(A.under), `${th(Math.abs(A.underH))} h under`, { page: 'payroll', params: { status: 'Under' } }),
-      kpi2('kc-violet', 'pound', 'Gross pay', money(A.gross), `${view().length.toLocaleString()} lines · £ is for information`, { page: 'payroll' }),
-      kpi2('kc-teal', 'users', 'People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
-      kpi2('kc-pink', 'sun', 'Leave & SSP', String(lv.length), `SSP ${money(sspPay)} · ${lv.filter((x) => !x.paid && !x.ssp).length} unpaid`, { page: 'leave' }));
+      kpi2('kc-blue', 'grid', 'Budget hours', th(A.bh) + ' h', 'project weekly hours budgets', { page: 'budgets' }),
+      kpi2(A.dh > 0.25 ? 'kc-red' : 'kc-green', 'trend', 'Hours difference', (A.dh > 0 ? '+' : '') + th(A.dh) + ' h', `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% · ${A.dh > 0.25 ? 'over the hours budget' : A.dh < -0.25 ? 'under the hours budget' : 'on the hours budget'}`, { cls: vTone, page: 'budgets' }),
+      kpi2('kc-red', 'alert', 'Projects over budget', String(A.projOver), `${th(A.projOverH)} h over their weekly budget`, { cls: A.projOver ? 'neg' : '', page: 'budgets' }),
+      kpi2('kc-green', 'check', 'Projects under budget', String(A.projUnder), `of ${A.projects.size} projects`, { page: 'budgets' }),
+      kpi2('kc-pink', 'users', 'Employees over budget', String(A.over), `${th(A.overH)} h over their own budget`, { cls: A.over ? 'neg' : '', page: 'payroll', params: { status: 'Over' } }),
+      kpi2('kc-violet', 'sun', 'Ad-hoc hours', th(A.adhocH) + ' h', 'charged to clients, not budgeted', { page: 'adhoc' }),
+      kpi2('kc-teal', 'pound', 'Ad-hoc to charge', money(A.adhocCharge), 'at each client’s ad-hoc rate', { page: 'adhoc' }),
+      kpi2('kc-slate', 'pound', 'Gross pay', money(A.gross), `${view().length.toLocaleString()} lines · £ is for information`, { page: 'payroll' }),
+      kpi2('kc-blue', 'users', 'People paid', A.paid.size.toLocaleString(), `of ${A.people.size.toLocaleString()} people in this run`, { page: 'payroll' }),
+      kpi2('kc-green', 'users', 'Active employees', act.length.toLocaleString(), noHours ? `${noHours} lines have a budget but no hours yet` : 'everyone has hours', { page: 'people' }),
+      kpi2('kc-amber', 'sun', 'Leave & SSP', String(lv.length), `SSP ${money(sspPay)} · ${lv.filter((x) => !x.paid && !x.ssp).length} unpaid`, { page: 'leave' }));
   }
 
   // ---------- project focus: show only the projects you choose, everywhere on the dashboard ----------
@@ -357,7 +374,7 @@ export async function render(root) {
     const c = ((ctx.prefs.dashboard || {}).compare) || {}, valid = (c.runs || []).filter((id) => ctx.runs.some((r) => r.id === id));
     return { by: c.by || 'project', metric: c.metric || 'hours', runs: valid.length ? valid : ctx.runs.slice(0, 2).map((r) => r.id), projects: c.projects || [] };
   }
-  async function cmpLoad() { const c = cmpCfg(), key = c.runs.join(','); if (S.cmp.key === key) return; S.cmp.key = key; S.cmp.lines = c.runs.length ? await loadLinesForRuns(c.runs).catch(() => []) : []; }
+  async function cmpLoad() { const c = cmpCfg(), key = c.runs.join(','); if (S.cmp.key === key) return; S.cmp.key = key; [S.cmp.lines, S.cmp.ps] = c.runs.length ? await Promise.all([loadLinesForRuns(c.runs).catch(() => []), loadProjectStatusForRuns(c.runs).catch(() => [])]) : [[], []]; }
   async function cmpSave(patch) {
     const v = { ...(ctx.prefs.dashboard || {}), compare: { ...cmpCfg(), ...patch } };
     try { await savePref('dashboard', v); ctx.prefs.dashboard = v; } catch (e) { toast(e.message, 'err'); }
@@ -368,7 +385,9 @@ export async function render(root) {
     const pick = c.projects.length ? c.projects : [...S.focus];
     const lines = S.cmp.lines.filter((l) => !pick.length || pick.includes(l.project_name));
     const cats = new Map();
-    for (const l of lines) { const k = c.by === 'project' ? l.project_name : (l.pay_group || 'Unassigned'); const row = cats.get(k) || { label: k, by: new Map(), tot: 0 }; const r = row.by.get(l.run_id) || { bh: 0, wh: 0, dh: 0, gross: 0 };
+    if (c.by === 'project') { const gx = new Map(); for (const l of S.cmp.lines) gx.set(l.run_id + '|' + normKey(l.project_name), num(l.gross_pay) + (gx.get(l.run_id + '|' + normKey(l.project_name)) || 0));
+      for (const p of (S.cmp.ps || [])) { if (pick.length && !pick.some((x) => normKey(x) === p.project_key)) continue; const row = cats.get(p.project_key) || { label: p.project_name, by: new Map(), tot: 0 }; row.by.set(p.run_id, { bh: num(p.budget_hours), wh: num(p.worked_hours), dh: num(p.hours_difference), gross: gx.get(p.run_id + '|' + p.project_key) || 0 }); row.tot += num(p.worked_hours); cats.set(p.project_key, row); } }
+    else for (const l of lines) { const k = l.pay_group || 'Unassigned'; const row = cats.get(k) || { label: k, by: new Map(), tot: 0 }; const r = row.by.get(l.run_id) || { bh: 0, wh: 0, dh: 0, gross: 0 };
       r.bh += num(l.window_budget_hours); r.wh += num(l.window_worked_hours); r.dh += num(l.hours_difference); r.gross += num(l.gross_pay); row.by.set(l.run_id, r); row.tot += num(l.window_worked_hours); cats.set(k, row); }
     let rows = [...cats.values()].sort((a, b) => (c.by === 'project' ? b.tot - a.tot : natCompare(a.label, b.label))); const more = c.by === 'project' && !pick.length && rows.length > 8; if (c.by === 'project' && !pick.length) rows = rows.slice(0, 8);
     const val = (r) => (c.metric === 'hours' ? r.wh : r.gross), fmt = (v) => (c.metric === 'hours' ? hrs(v) + ' h' : money(v));
@@ -466,6 +485,7 @@ export async function render(root) {
     S.run = currentRun();
     const [data, periods, signals, projects] = await Promise.all([loadRunData(S.run.id), loadPeriods(S.run.id), loadSignals(S.run.id).catch(() => S.signals), loadProjects().catch(() => [])]);
     S.run = currentRun(); S.lines = data.lines; S.weeksByLine = data.weeksByLine; S.periods = periods; S.signals = signals; S.projects = projects;
+    [S.pstat, S.adhoc, S.emps] = await Promise.all([loadProjectStatus(S.run.id).then((r) => new Map(r.map((p) => [p.project_key, p]))).catch(() => new Map()), loadAdhoc(S.run.id).catch(() => []), loadEmployeesFull().catch(() => [])]);
     const vis = resolveLayout(ctx.prefs.dashboard, roleDefault());
     if (vis.includes('board_top')) { [S.daily, S.leaveRows] = await Promise.all([loadDailyForRun(S.run.id).catch(() => []), loadRunLeave(S.run.id).catch(() => [])]); }
     if (vis.includes('compare')) await cmpLoad();

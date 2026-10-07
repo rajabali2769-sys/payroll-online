@@ -121,6 +121,7 @@ export async function render(root) {
     function cell(raw, r) {
       const txt = String(raw || '').trim(); if (!txt) return { kind: 'empty', hours: 0 };
       const m = txt.match(/^([A-Za-z]{2,10})\b[\s:]*(.*)$/);
+      if (m && /^(AH|ADHOC)$/i.test(m[1])) { const hh = m[2] ? parseDayCell(m[2]).hours : null; return hh > 0 ? { kind: 'adhoc', hours: hh } : { kind: 'invalid', hours: 0 }; }
       if (m && leaveBy.has(m[1].toUpperCase())) { const lt = leaveBy.get(m[1].toUpperCase()); const rest = m[2] ? parseDayCell(m[2]).hours : null; const ln = match(r); const def = ln && +ln.budgeted_hours ? +ln.budgeted_hours / 5 : 0; return { kind: 'leave', lt, hours: lt.ssp ? 0 : (rest ?? def) }; }
       const p = parseDayCell(txt); return p.kind === 'invalid' ? { kind: 'invalid', hours: 0 } : { kind: 'work', hours: p.hours || 0, empty: p.hours === null };
     }
@@ -149,9 +150,9 @@ export async function render(root) {
       function recalc() {
         let all = 0, bad = 0, warn = 0;
         for (const { r, inputs, total, flag } of refs) {
-          let t = 0, invalid = false, leaveDays = 0;
-          r.cells.forEach((raw, ci) => { const c = cell(raw, r); inputs[ci].classList.toggle('bad', c.kind === 'invalid'); inputs[ci].classList.toggle('leave', c.kind === 'leave'); if (c.kind === 'invalid') invalid = true; if (c.kind === 'work') t += c.hours; if (c.kind === 'leave') leaveDays++; });
-          total.textContent = hrs(t) + (leaveDays ? ` +${leaveDays}L` : ''); all += t;
+          let t = 0, invalid = false, leaveDays = 0, ahH = 0;
+          r.cells.forEach((raw, ci) => { const c = cell(raw, r); inputs[ci].classList.toggle('bad', c.kind === 'invalid'); inputs[ci].classList.toggle('leave', c.kind === 'leave' || c.kind === 'adhoc'); if (c.kind === 'invalid') invalid = true; if (c.kind === 'work') t += c.hours; if (c.kind === 'leave') leaveDays++; if (c.kind === 'adhoc') ahH += c.hours; });
+          total.textContent = hrs(t) + (leaveDays ? ` +${leaveDays}L` : '') + (ahH ? ` +${hrs(ahH)}AH` : ''); all += t;
           const stated = r.stated === '' ? null : +r.stated, ln = match(r), problems = [];
           if (!r.employee) problems.push(['bad', 'name?']); if (invalid) problems.push(['bad', 'check a cell']);
           if (r.employee && !ln && !(+r.rate > 0)) problems.push(['warn', 'new person: add £/h']);
@@ -193,7 +194,8 @@ export async function render(root) {
         const ln = match(r); const rate = +r.rate > 0 ? +r.rate : ln ? +ln.hourly_rate : 0; if (!ln && !(rate > 0)) return toast(`${r.employee} is not in this pay run yet — add their hourly rate (£/h)`, 'err');
         entries.push({ project: ln ? ln.project_name : E.project_name, site: E.site_name || (ln ? ln.site_name : null), employee_name: ln ? ln.employee_name : r.employee, ni: r.ni || (ln && ln.ni_number) || null, rate: +r.rate > 0 ? rate : null,
           // only touch a day if it has something typed now, or had something typed when this sheet was last saved (so a Mon–Fri sheet never wipes weekend hours from elsewhere)
-          days: dates.map((d, i) => ({ date: d, hours: cells[i].kind === 'work' && !cells[i].empty ? cells[i].hours : null })).filter((_, i) => cells[i].kind !== 'empty' || String((r.orig || [])[i] || '').trim()),
+          days: dates.map((d, i) => ({ date: d, hours: cells[i].kind === 'work' && !cells[i].empty ? cells[i].hours : null })).filter((_, i) => cells[i].kind !== 'adhoc' && (cells[i].kind !== 'empty' || String((r.orig || [])[i] || '').trim())),
+          adhoc: dates.map((d, i) => (cells[i].kind === 'adhoc' ? { date: d, hours: cells[i].hours } : null)).filter(Boolean), clearAdhocDates: dates.filter((_, i) => cells[i].kind === 'work' && !cells[i].empty),
           clearLeaveDates: dates.filter((_, i) => cells[i].kind === 'work' && !cells[i].empty), leave: dates.map((d, i) => cells[i].kind === 'leave' ? { date: d, hours: cells[i].hours, type: cells[i].lt.code } : null).filter(Boolean) });
       }
       saveBtn.disabled = true;
@@ -224,7 +226,7 @@ export async function render(root) {
       h('div', { class: 'split', style: { marginTop: '12px' } }, viewer, h('div', null,
         h('datalist', { id: 'tsproj' }, projectsInRun().map((p) => h('option', { value: p }))),
         h('div', { class: 'form-grid', style: { gridTemplateColumns: 'repeat(4,1fr)', marginBottom: '10px' } }, h('label', { class: 'fld' }, 'Project', proj), h('label', { class: 'fld' }, 'Site (optional)', site), h('label', { class: 'fld' }, 'Week commencing (Monday)', week), h('label', { class: 'fld' }, 'Supervisor on the sheet', sup)),
-        h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Type the times as written: 9.30-14.30 · or just hours: 5 · or leave: AL 5, SICK 6, SSP, UNPAID 8. Leave codes come from Settings.'),
+        h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Type the times as written: 9.30-14.30 · or just hours: 5 · or leave: AL 5, SICK 6, SSP, UNPAID 8. Leave codes come from Settings. Ad-hoc (charged to the client): AH 3.'),
         aiNote, gridHost, h('div', { class: 'row wrap', style: { marginTop: '10px' } }, can ? [aiBtn, addBtn, staffBtn] : null, h('div', { class: 'grow' }), summary),
         h('div', { class: 'row wrap', style: { marginTop: '14px' } }, h('label', { class: 'fld' }, 'Status', status), h('div', { class: 'grow' }), h('button', { class: 'btn', onClick: close }, 'Close'), can ? saveBtn : null))));
     drawGrid(); drawViewer();

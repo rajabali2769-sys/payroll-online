@@ -60,7 +60,7 @@ export async function render(root, params) {
     clear(filterBar).append(
       h('label', { class: 'fld w2' }, 'Search', h('input', { type: 'search', placeholder: 'Employee, project, site, NI…', value: f.q, onInput: debounce((e) => { f.q = e.target.value; draw(); }, 180) })),
       sel('Pay date', 'group', groups.map((g) => [g])), sel('Project', 'project', projects.map((p) => [p]), true),
-      sel('Budget status', 'status', [['Over', 'Over budget (hours)'], ['Under', 'Under budget (hours)'], ['Within', 'Within budget'], ['NoBudget', 'No hours budget set']]),
+      sel('Budget status', 'status', [['Over', 'Over budget (hours)'], ['Under', 'Under budget (hours)'], ['Within', 'Within budget'], ['NoBudget', 'No hours budget set'], ['AdHoc', 'Ad-hoc lines']]),
       sel('Contract type', 'type', [['Hourly'], ['Cover'], ['Fixed'], ['(none)', 'No type set']]),
       h('div', { class: 'grow' }),
       h('div', { class: 'row' },

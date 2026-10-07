@@ -10,17 +10,18 @@ export const pocFor = (project, projects) => {
   return { project: p || null, name: p?.manager || '', email: p?.manager_email || escalationCfg().default_email || '' };
 };
 
-export function summarise(lines) {
+export function summarise(lines, ps) {
   const gross = lines.reduce((s, l) => s + (+l.gross_pay || 0), 0), budget = lines.reduce((s, l) => s + (+l.budgeted_pay || 0), 0);
   const bh = lines.reduce((s, l) => s + (+l.window_budget_hours || 0), 0), wh = lines.reduce((s, l) => s + (+l.window_worked_hours || 0), 0), dh = lines.reduce((s, l) => s + (+l.hours_difference || 0), 0);
   const over = lines.filter((l) => l.budget_status === 'Over').sort((a, b) => +b.hours_difference - +a.hours_difference);
   // over budget = more HOURS worked than the weekly hours budget (money is only shown for information)
+  if (ps) { const b2 = +ps.budget_hours, w2 = +ps.worked_hours, d2 = +ps.hours_difference; return { gross, budget, diff: gross - budget, pct: budget ? ((gross - budget) / budget) * 100 : 0, bh: b2, wh: w2, dh: d2, hpct: b2 ? (d2 / b2) * 100 : 0, over }; }   // the project's own weekly hours budget
   return { gross, budget, diff: gross - budget, pct: budget ? ((gross - budget) / budget) * 100 : 0, bh, wh, dh, hpct: bh ? (dh / bh) * 100 : 0, over };
 }
 
-export async function openEscalate({ run, project, lines, onSent }) {
+export async function openEscalate({ run, project, lines, onSent, pstat }) {
   const [projects, history] = await Promise.all([loadProjects(), loadEscalations(run.id).catch(() => [])]);
-  const poc = pocFor(project, projects), S = summarise(lines), cfg = escalationCfg();
+  const poc = pocFor(project, projects), S = summarise(lines, pstat), cfg = escalationCfg();
   const me = (ctx.me && (ctx.me.full_name || ctx.me.email.split('@')[0])) || 'Payroll team';
   const first = (poc.name || 'there').split(' ')[0];
   const hh = (n) => (Math.round(n * 100) / 100).toString();
