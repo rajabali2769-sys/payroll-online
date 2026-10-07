@@ -365,7 +365,7 @@ export async function callFn(name, body) {
   if (data && data.error) throw new Error(data.error);
   return data;
 }
-export const sendEmails = (kind, messages, extra = {}) => callFn('send-email', { kind, messages, ...extra });
+export const sendEmails = (kind, messages, extra = {}) => callFn('resend-email', { kind, messages, ...extra });
 export const aiReadTimesheet = async ({ path, text, hint }) => (await callFn('ai', { action: 'read_timesheet', path, text, hint })).result;
 export const aiChat = (messages, current_run) => callFn('ai', { action: 'chat', messages, current_run });
 
