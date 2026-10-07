@@ -96,7 +96,7 @@ export function downloadCSV(filename, rows) {
   const a = h('a', { href: URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })), download: filename });
   document.body.append(a); a.click(); a.remove();
 }
-export const statusPill = (s) => h('span', { class: 'pill ' + String(s || 'within').toLowerCase() }, s === 'Over' ? 'Over budget' : s === 'Under' ? 'Under budget' : 'Within budget');
+export const statusPill = (s) => h('span', { class: 'pill ' + String(s || 'within').toLowerCase() }, s === 'Over' ? 'Over budget' : s === 'Under' ? 'Under budget' : s === 'NoBudget' ? 'No budget set' : 'Within budget');
 export const natCompare = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
 export const mondayOf = (iso) => { const d = new Date(iso + 'T00:00:00Z'); const dow = (d.getUTCDay() + 6) % 7; return new Date(d.getTime() - dow * 86400000).toISOString().slice(0, 10); };
 

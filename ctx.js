@@ -42,6 +42,6 @@ export function runPicker(onChange) {
 
 // Settings with safe defaults (so the app still works before anyone has opened the Settings page)
 export const payRules = () => ({ ssp_weekly_rate: 123.25, ssp_days: 5, ...(ctx.settings.pay_rules || {}) });
-export const escalationCfg = () => ({ default_email: '', cc: '', threshold_gbp: 250, threshold_pct: 5, ...(ctx.settings.escalation || {}) });
+export const escalationCfg = () => ({ default_email: '', cc: '', threshold_gbp: 250, threshold_hours: 8, threshold_pct: 5, ...(ctx.settings.escalation || {}) });
 export const journalCfg = () => ctx.settings.journal || {};
 export const leaveType = (code) => ctx.leaveTypes.find((t) => t.code === code);

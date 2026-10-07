@@ -60,11 +60,11 @@ export async function render(root, params) {
     clear(filterBar).append(
       h('label', { class: 'fld w2' }, 'Search', h('input', { type: 'search', placeholder: 'Employee, project, site, NI…', value: f.q, onInput: debounce((e) => { f.q = e.target.value; draw(); }, 180) })),
       sel('Pay date', 'group', groups.map((g) => [g])), sel('Project', 'project', projects.map((p) => [p]), true),
-      sel('Budget status', 'status', [['Over', 'Over budget'], ['Under', 'Under budget'], ['Within', 'Within budget']]),
+      sel('Budget status', 'status', [['Over', 'Over budget (hours)'], ['Under', 'Under budget (hours)'], ['Within', 'Within budget'], ['NoBudget', 'No hours budget set']]),
       sel('Contract type', 'type', [['Hourly'], ['Cover'], ['Fixed'], ['(none)', 'No type set']]),
       h('div', { class: 'grow' }),
       h('div', { class: 'row' },
-        f.project && canEdit() && summarise(data.lines.filter((l) => l.project_name === f.project)).diff > 0.5 ? h('button', { class: 'btn warn', onClick: () => openEscalate({ run, project: f.project, lines: data.lines.filter((l) => l.project_name === f.project), onSent: () => {} }) }, icon('mail'), 'Escalate this project') : null,
+        f.project && canEdit() && summarise(data.lines.filter((l) => l.project_name === f.project)).dh > 0.25 ? h('button', { class: 'btn warn', onClick: () => openEscalate({ run, project: f.project, lines: data.lines.filter((l) => l.project_name === f.project), onSent: () => {} }) }, icon('mail'), 'Escalate this project') : null,
         h('button', { class: 'btn', onClick: () => exportCsv() }, icon('download'), 'Export CSV'),
         canEdit() ? h('button', { class: 'btn primary', onClick: addLine }, icon('plus'), 'Add line') : null));
     // week chips + column toggles
@@ -98,7 +98,8 @@ export async function render(root, params) {
     if (f.cols.pay) cols.push({ k: 'hourly_pay', label: 'Hourly pay', num: true, fmt: money, total: true }, { k: 'fixed_pay', label: 'Fixed pay', num: true, fmt: money, edit: 'number', nullable: true, total: true }, { k: 'leave_pay', label: 'Leave pay', num: true, fmt: money, edit: 'number', total: true });
     cols.push({ k: 'addition', label: 'Addition', num: true, fmt: money, edit: 'number', total: true }, { k: 'deduction', label: 'Deduction', num: true, fmt: money, edit: 'number', total: true },
       { k: 'gross_pay', label: 'Gross pay', num: true, fmt: money, total: true, cls: 'total' }, { k: 'budgeted_pay', label: 'Budgeted', num: true, fmt: money, total: true },
-      { k: 'difference', label: 'Difference', num: true, fmt: money, total: true, diff: true }, { k: 'budget_status', label: 'Status', pillStatus: true },
+      { k: 'window_budget_hours', label: 'Budget h', num: true, fmt: hrs, total: true }, { k: 'window_worked_hours', label: 'Worked h', num: true, fmt: hrs, total: true }, { k: 'hours_difference', label: 'Hours diff', num: true, fmt: hrs, total: true, diff: true },
+      { k: 'difference', label: 'Cost diff £', num: true, fmt: money, total: true }, { k: 'budget_status', label: 'Status', pillStatus: true },
       { k: 'remarks', label: 'Remarks', cls: 'clip', edit: 'text' });
     return cols;
   }
@@ -137,7 +138,7 @@ export async function render(root, params) {
       if (!(c.total || c.week || c.sel)) { tds[i].textContent = ''; return; }
       const s = visible.reduce((a, l) => a + (+cellValue(l, c) || 0), 0);
       tds[i].textContent = c.fmt ? c.fmt(s) : c.sel === 'pay' ? money(s) : hrs(s);
-      if (c.diff) tds[i].className = 'num ' + (s > 0.5 ? 'neg' : s < -0.5 ? 'pos' : '');
+      if (c.diff) tds[i].className = 'num ' + (s > 0.25 ? 'neg' : s < -0.25 ? 'pos' : '');
     });
   }
   function buildRow(l) {
@@ -164,7 +165,7 @@ export async function render(root, params) {
     } else {
       const v = cellValue(l, c);
       if (c.fmt) td.append(v === null || v === undefined || v === '' ? '' : c.fmt(v)); else { td.append(v === null || v === undefined ? '' : String(v)); if (c.cls && c.cls.includes('clip') && v) td.title = String(v); }
-      if (c.diff) td.classList.add(+v > 0.5 ? 'neg' : +v < -0.5 ? 'pos' : 'x');
+      if (c.diff) td.classList.add(+v > 0.25 ? 'neg' : +v < -0.25 ? 'pos' : 'x');
       if (c.neg && +v < 0) td.classList.add('neg');
       if (c.edit === 'number' && (+v === 0 || v === null)) td.classList.add('zero');
     }

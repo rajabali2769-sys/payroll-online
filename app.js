@@ -120,7 +120,7 @@ function shell() {
     h('aside', { class: 'side' }, brand(true), curBox, nav,
       h('div', { class: 'me' }, liveEl, h('div', { style: { marginTop: '10px' } }, h('b', null, ctx.me.email), { super_admin: 'Super admin', admin: 'Admin', editor: 'Editor', viewer: 'Viewer' }[ctx.me.role] || ctx.me.role),
         h('button', { class: 'btn sm', onClick: () => auth.signOut() }, 'Sign out'),
-        h('div', { class: 'credit', onClick: () => ownerPopup(true) }, `Designed by ${B.owner_name}`))),
+        h('div', { class: 'credit', onClick: () => ownerPopup(true) }, `Designed by ${B.owner_name}`), h('div', { class: 'credit ver', title: 'Which version of the website is running' }, 'Version ' + (window.__BUILD || 'old')))),
     mainEl));
   paintCurrent();
 }

@@ -17,16 +17,16 @@ async function payTab(root) {
   function draw() {
     const pr = payRules(), es = escalationCfg(), jc = { ...DEFAULT_JOURNAL, ...(ctx.settings.journal || {}), accounts: { ...DEFAULT_JOURNAL.accounts, ...((ctx.settings.journal || {}).accounts || {}) } };
     // pay rules
-    const ssp = inp(pr.ssp_weekly_rate, { type: 'number' }), days = inp(pr.ssp_days, { type: 'number' });
+    const ssp = inp(pr.ssp_weekly_rate, { type: 'number' }), days = inp(pr.ssp_days, { type: 'number' }), tol = inp(pr.budget_tolerance_hours ?? 0.25, { type: 'number' });
     const payCard = h('div', { class: 'card pad' }, h('h3', null, 'Pay rules'),
-      h('div', { class: 'set-grid' }, fld('SSP weekly rate (£)', ssp, '2026/27: £123.25, or 80% of average weekly earnings if lower'), fld('Qualifying days per week', days, 'SSP per day = weekly rate ÷ this')),
-      admin ? h('button', { class: 'btn primary sm', style: { marginTop: '12px' }, onClick: () => save('pay_rules', { ssp_weekly_rate: num(ssp.value) || 123.25, ssp_days: num(days.value) || 5 }) }, 'Save pay rules') : null);
+      h('div', { class: 'set-grid' }, fld('SSP weekly rate (£)', ssp, '2026/27: £123.25, or 80% of average weekly earnings if lower'), fld('Qualifying days per week', days, 'SSP per day = weekly rate ÷ this'), fld('Budget tolerance (hours)', tol, 'Over / under budget is decided on hours. A line within this many hours of its budget counts as “within budget” (0.25 = 15 minutes).')),
+      admin ? h('button', { class: 'btn primary sm', style: { marginTop: '12px' }, onClick: () => save('pay_rules', { ssp_weekly_rate: num(ssp.value) || 123.25, ssp_days: num(days.value) || 5, budget_tolerance_hours: num(tol.value) ?? 0.25 }) }, 'Save pay rules') : null);
     // escalation
-    const em = inp(es.default_email, { type: 'email', placeholder: 'fallback if a project has no contact' }), cc = inp(es.cc, { type: 'email' }), gbp = inp(es.threshold_gbp, { type: 'number' }), pct = inp(es.threshold_pct, { type: 'number' });
+    const em = inp(es.default_email, { type: 'email', placeholder: 'fallback if a project has no contact' }), cc = inp(es.cc, { type: 'email' }), hrsT = inp(es.threshold_hours ?? 8, { type: 'number' }), pct = inp(es.threshold_pct, { type: 'number' });
     const escCard = h('div', { class: 'card pad' }, h('h3', null, 'Budget escalation'),
-      h('div', { class: 'set-grid' }, fld('Default point of contact', em, 'Used when a project has no area manager saved'), fld('Always copy (CC)', cc), fld('Highlight when over by (£)', gbp), fld('…or over by (%)', pct)),
+      h('div', { class: 'set-grid' }, fld('Default point of contact', em, 'Used when a project has no area manager saved'), fld('Always copy (CC)', cc), fld('Highlight when over by (hours)', hrsT, 'Projects this many hours over (or more) are shown as urgent'), fld('…or over by (%)', pct)),
       h('div', { class: 'small muted', style: { marginTop: '8px' } }, 'Each project’s area manager and email are managed under Projects & POCs.'),
-      admin ? h('button', { class: 'btn primary sm', style: { marginTop: '12px' }, onClick: () => save('escalation', { default_email: em.value.trim(), cc: cc.value.trim(), threshold_gbp: num(gbp.value) ?? 250, threshold_pct: num(pct.value) ?? 5 }) }, 'Save escalation settings') : null);
+      admin ? h('button', { class: 'btn primary sm', style: { marginTop: '12px' }, onClick: () => save('escalation', { default_email: em.value.trim(), cc: cc.value.trim(), threshold_hours: num(hrsT.value) ?? 8, threshold_pct: num(pct.value) ?? 5 }) }, 'Save escalation settings') : null);
     // journal
     const acc = {}; const labels = {};
     const accFields = Object.keys(DEFAULT_JOURNAL.accounts).map((k) => { acc[k] = inp(jc.accounts[k]); labels[k] = inp((jc.labels || {})[k] ?? DEFAULT_JOURNAL.labels[k]);

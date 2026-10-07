@@ -2,11 +2,14 @@
 export const WIDGETS = [
   { id: 'hero', title: 'Pay run banner', desc: 'Big gross-pay number, budget ring and the Approve / Lock buttons' },
   { id: 'checklist', title: 'Payroll checklist', desc: 'The 7 steps from timesheets to lock, with counters' },
-  { id: 'kpis', title: 'Key figures', desc: 'Gross, budget, difference, people, hours, over/under, leave & SSP' },
+  { id: 'kpis', title: 'Key figures', desc: 'Hours worked vs hours budget, over / under budget, gross, people, leave & SSP' },
+  { id: 'board_top', title: 'Hours board', desc: 'Hours overview bars, latest day vs previous day, and leave & absences' },
+  { id: 'board_bottom', title: 'Pay cycle board', desc: 'Week-by-week table (budget vs worked hours) and the hours-budget bars' },
+  { id: 'compare', title: 'Compare pay cycles & projects', desc: 'Put several pay runs and projects side by side (hours or cost)' },
   { id: 'donuts', title: 'Hours & cost donuts', desc: 'Where the hours went, and cost by pay date' },
   { id: 'escalations', title: 'Projects over budget', desc: 'With the one-click Escalate button' },
   { id: 'missing', title: 'Missing timesheets', desc: 'People with a budget but no hours yet' },
-  { id: 'chart', title: 'Budget vs actual chart', desc: 'By pay date, project or week' },
+  { id: 'chart', title: 'Hours budget vs hours worked chart', desc: 'By pay date, project or week' },
   { id: 'table', title: 'By pay date table', desc: 'Sortable table of each pay date' },
   { id: 'attention', title: 'Worth a look & biggest differences', desc: 'Things to check and the largest over / underspends' },
 ];

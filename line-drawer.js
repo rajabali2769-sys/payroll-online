@@ -44,8 +44,8 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
         h('button', { class: 'btn ghost', onClick: close, title: 'Close (Esc)' }, icon('x'))),
       h('div', { class: 'grid kpis', style: { margin: '14px 0 0', gridTemplateColumns: 'repeat(4, 1fr)' } },
         mini('Gross pay', money(line.gross_pay)), mini('Budgeted', money(line.budgeted_pay)),
-        mini('Difference', money(line.difference), +line.difference > 0.5 ? 'neg' : +line.difference < -0.5 ? 'pos' : ''), h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Status'), h('div', { style: { marginTop: '6px' } }, statusPill(line.budget_status)))),
-      h('div', { class: 'small muted', style: { marginTop: '6px' } }, `Hours ${hrs(line.actual_hours)} · leave ${hrs(line.leave_hours)} · over ${hrs(line.over_hours)} · under ${hrs(line.less_hours)} · rate ${money(line.hourly_rate)}`),
+        mini('Hours vs budget', (+line.hours_difference > 0 ? '+' : '') + hrs(line.hours_difference) + ' h', +line.hours_difference > 0.25 ? 'neg' : +line.hours_difference < -0.25 ? 'pos' : ''), h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Status'), h('div', { style: { marginTop: '6px' } }, statusPill(line.budget_status)))),
+      h('div', { class: 'small muted', style: { marginTop: '6px' } }, `Hours budget ${hrs(line.window_budget_hours)} h · worked ${hrs(line.window_worked_hours)} h · cost difference ${money(line.difference)} · hours ${hrs(line.actual_hours)} · leave ${hrs(line.leave_hours)} · over ${hrs(line.over_hours)} · under ${hrs(line.less_hours)} · rate ${money(line.hourly_rate)}`),
 
       h('h4', null, 'Weekly figures'),
       h('div', { class: 'tablewrap auto' }, h('table', { class: 't' },

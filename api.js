@@ -390,3 +390,7 @@ export async function uploadAiCopy(path, blob) {
   const { error } = await sb.storage.from('timesheets').upload(path + '__ai.jpg', blob, { contentType: 'image/jpeg', upsert: false });
   if (error) throw new Error(error.message);
 }
+
+// ---------- v4.2: hours-based budget views for the dashboard ----------
+export const loadLinesForRuns = async (runIds) => fetchAll(() => sb.from('v_payroll_lines').select('id,run_id,run_label,stream,project_name,pay_group,employee_name,window_budget_hours,window_worked_hours,hours_difference,gross_pay,budgeted_pay,budget_status').in('run_id', runIds).order('id'));
+export const loadDailyForRun = async (runId) => fetchAll(() => sb.from('v_daily').select('work_date,hours,project_name,employee_name,hourly_rate,contract_type,line_id').eq('run_id', runId).order('work_date').order('line_id'));

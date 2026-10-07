@@ -12,8 +12,10 @@ export const pocFor = (project, projects) => {
 
 export function summarise(lines) {
   const gross = lines.reduce((s, l) => s + (+l.gross_pay || 0), 0), budget = lines.reduce((s, l) => s + (+l.budgeted_pay || 0), 0);
-  const over = lines.filter((l) => +l.difference > 0.5).sort((a, b) => +b.difference - +a.difference);
-  return { gross, budget, diff: gross - budget, pct: budget ? ((gross - budget) / budget) * 100 : 0, over };
+  const bh = lines.reduce((s, l) => s + (+l.window_budget_hours || 0), 0), wh = lines.reduce((s, l) => s + (+l.window_worked_hours || 0), 0), dh = lines.reduce((s, l) => s + (+l.hours_difference || 0), 0);
+  const over = lines.filter((l) => l.budget_status === 'Over').sort((a, b) => +b.hours_difference - +a.hours_difference);
+  // over budget = more HOURS worked than the weekly hours budget (money is only shown for information)
+  return { gross, budget, diff: gross - budget, pct: budget ? ((gross - budget) / budget) * 100 : 0, bh, wh, dh, hpct: bh ? (dh / bh) * 100 : 0, over };
 }
 
 export async function openEscalate({ run, project, lines, onSent }) {
@@ -21,16 +23,17 @@ export async function openEscalate({ run, project, lines, onSent }) {
   const poc = pocFor(project, projects), S = summarise(lines), cfg = escalationCfg();
   const me = (ctx.me && (ctx.me.full_name || ctx.me.email.split('@')[0])) || 'Payroll team';
   const first = (poc.name || 'there').split(' ')[0];
-  const body0 = `Hi ${first},\n\nThe ${run.label} payroll for ${project} is over budget.\n\n` +
-    `Budget:  ${money(S.budget)}\nPayroll cost so far:  ${money(S.gross)}\nOver by:  ${money(S.diff)}${S.budget ? ` (${S.pct.toFixed(1)}%)` : ''}\n\n` +
-    (S.over.length ? `Biggest overspends:\n${S.over.slice(0, 6).map((l) => `• ${l.employee_name}${l.site_name ? ' (' + l.site_name + ')' : ''}: ${money(l.difference)} over`).join('\n')}\n\n` : '') +
+  const hh = (n) => (Math.round(n * 100) / 100).toString();
+  const body0 = `Hi ${first},\n\nThe ${run.label} payroll for ${project} is over its hours budget.\n\n` +
+    `Hours budget:  ${hh(S.bh)} h\nHours worked:  ${hh(S.wh)} h\nOver by:  ${hh(S.dh)} h${S.bh ? ` (${S.hpct.toFixed(1)}%)` : ''}\nCost so far (for information):  ${money(S.gross)}\n\n` +
+    (S.over.length ? `Biggest overspends in hours:\n${S.over.slice(0, 6).map((l) => `• ${l.employee_name}${l.site_name ? ' (' + l.site_name + ')' : ''}: ${hh(+l.hours_difference)} h over`).join('\n')}\n\n` : '') +
     `Please review the hours and let me know whether this should be challenged, or approved, before payroll is submitted.\n\nThanks,\n${me}`;
   const prior = history.filter((e) => normKey(e.project_name) === normKey(project));
 
   modal(`Escalate ${project}`, (close) => {
     const to = h('input', { type: 'email', value: poc.email, placeholder: 'area.manager@company.com' });
     const cc = h('input', { type: 'email', value: cfg.cc || '', placeholder: 'optional' });
-    const subject = h('input', { type: 'text', value: `Budget over: ${project} – ${run.label} (${money(S.diff)} over)` });
+    const subject = h('input', { type: 'text', value: `Hours over budget: ${project} – ${run.label} (${hh(S.dh)} h over)` });
     const body = h('textarea', { rows: 13, style: { fontFamily: 'inherit' } }, body0);
     const remember = h('input', { type: 'checkbox', checked: !poc.project?.manager_email });
     const err = h('div', { class: 'notice err hidden' });
@@ -38,8 +41,8 @@ export async function openEscalate({ run, project, lines, onSent }) {
     const log = async (how) => {
       if (!to.value.trim()) { err.textContent = 'Add the email address of the point of contact first.'; err.classList.remove('hidden'); return false; }
       try {
-        await addEscalation({ run_id: run.id, project_name: project, sent_to: to.value.trim(), cc: cc.value.trim() || null, subject: subject.value, body: body.value, over_amount: Math.round(S.diff * 100) / 100,
-          budget: Math.round(S.budget * 100) / 100, actual: Math.round(S.gross * 100) / 100, sent_by_email: ctx.me?.email || null });
+        await addEscalation({ run_id: run.id, project_name: project, sent_to: to.value.trim(), cc: cc.value.trim() || null, subject: subject.value, body: body.value, over_amount: Math.round(S.dh * 100) / 100, unit: 'hours',
+          budget: Math.round(S.bh * 100) / 100, actual: Math.round(S.wh * 100) / 100, sent_by_email: ctx.me?.email || null });
         if (remember.checked && poc.project && to.value.trim() !== poc.project.manager_email) { try { await saveProjectContact(poc.project.id, { manager_email: to.value.trim() }); } catch { /* not allowed - fine */ } }
         toast(how === 'mail' ? 'Escalation logged — finish sending in your email app' : 'Escalation logged', 'ok');
         onSent && onSent();
