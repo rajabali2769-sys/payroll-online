@@ -10,16 +10,17 @@ export const ACTIONS = [
   ['edit_payroll', 'Edit payroll, hours, leave and timesheets', 'Enforced by the database'], ['approve_lock', 'Approve and lock a pay run', 'Enforced by the database'], ['unlock', 'Unlock a locked pay run', 'Enforced by the database'],
   ['delete_run', 'Delete a pay run', 'Enforced by the database'], ['manage_settings', 'Change settings and customisation', 'Enforced by the database'], ['manage_users', 'Manage users and roles', 'Enforced by the database'],
   ['send_emails', 'Send emails (reminders, reports, escalations)', 'Enforced by the email function'], ['send_payslips', 'Send payslips to employees', 'Enforced by the email function'],
+  ['manage_hr', 'Edit employee HR records, open HR cases, send HR letters', 'Enforced by the database and email function'], ['recruit_add', 'Add temporary / cover new starters (recruitment)', 'Enforced by the database'], ['move_to_payroll', 'Move new starters into a payroll', 'Screen setting (also needs “Edit payroll”)'],
   ['use_ai_timesheet', 'Read timesheets with AI', 'Enforced by the AI function'], ['use_chatbot', 'Use the AI chat assistant', 'Enforced by the AI function'], ['import_data', 'Import Excel / upload hours', 'Screen setting'], ['manage_journal', 'Build and export the manual journal', 'Screen setting'],
 ];
-const ROLES = [['admin', 'Admin (your team)'], ['editor', 'Editor'], ['viewer', 'Viewer']];
+const ROLES = [['admin', 'Admin (your team)'], ['editor', 'Editor'], ['viewer', 'Viewer'], ['hr', 'HR team'], ['recruitment', 'Recruitment']];
 const canChange = () => ctx.can('manage_settings');
 const saveSet = async (key, value, msg = 'Saved') => { try { await saveSetting(key, value); ctx.settings = await loadSettings(); toast(msg, 'ok'); } catch (e) { toast(e.message, 'err'); } };
 
 export async function accessTab(host) {
   const rows = await loadRolePerms().catch(() => []), has = (role, perm) => !!(rows.find((r) => r.role === role && r.perm === perm) || {}).allowed;
   const sup = ctx.isSuper, cell = (role, perm) => h('td', null, h('input', { type: 'checkbox', checked: has(role, perm), disabled: !sup, onChange: async (e) => { try { await saveRolePerm(role, perm, e.target.checked); const r = rows.find((x) => x.role === role && x.perm === perm); if (r) r.allowed = e.target.checked; else rows.push({ role, perm, allowed: e.target.checked }); toast('Saved', 'ok'); } catch (er) { toast(er.message, 'err'); e.target.checked = !e.target.checked; } } }));
-  const sub = (t) => h('tr', { class: 'sub' }, h('td', { colspan: 5 }, t));
+  const sub = (t) => h('tr', { class: 'sub' }, h('td', { colspan: ROLES.length + 2 }, t));
   clear(host).append(
     h('div', { class: 'notice', style: { marginBottom: '12px' } }, sup ? 'You are the super admin: you always have every permission, and you decide what each other role can see and do. Changes apply the next time that person opens the app.' : 'Only the super admin can change this. You can see what each role may do.'),
     h('div', { class: 'tablewrap auto matrix' }, h('table', { class: 't' }, h('thead', null, h('tr', null, h('th', null, 'Permission'), h('th', null, 'Super admin'), ROLES.map(([, t]) => h('th', null, t)))),

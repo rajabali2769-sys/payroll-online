@@ -4,6 +4,7 @@ import { h, clear, toast, icon, confirmBox } from './ui.js';
 import { ctx, payRules, escalationCfg } from './ctx.js';
 import { DEFAULT_JOURNAL, DEFAULT_ESTIMATE } from './timesheet.js';
 import { accessTab, dashboardTab, brandTab, emailTab, aiTab } from './customise.js';
+import { hrTab } from './hrsettings.js';
 
 async function payTab(root) {
   const admin = ctx.can('manage_settings');
@@ -62,7 +63,7 @@ async function payTab(root) {
   draw();
 }
 
-const TABS = [['pay', 'Pay, leave & journal'], ['access', 'Access & roles'], ['dashboard', 'Dashboard defaults'], ['brand', 'Branding & owner'], ['email', 'Email'], ['ai', 'AI assistant']];
+const TABS = [['pay', 'Pay, leave & journal'], ['access', 'Access & roles'], ['dashboard', 'Dashboard defaults'], ['brand', 'Branding & owner'], ['email', 'Email'], ['hr', 'HR letters'], ['ai', 'AI assistant']];
 export async function render(root, params) {
   let tab = (params && params.tab) || 'pay';
   const head = h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Customise & settings'), h('p', null, ctx.can('manage_settings') ? 'Change how pay, access, the dashboard, emails and the AI work. Changes apply for everyone straight away.' : 'Read-only. The system owner can change these.')));
@@ -71,7 +72,7 @@ export async function render(root, params) {
   async function show() {
     clear(bar).append(...TABS.map(([k, t]) => h('button', { class: tab === k ? 'on' : '', onClick: () => { tab = k; show(); } }, t)));
     clear(host);
-    try { await ({ pay: payTab, access: accessTab, dashboard: dashboardTab, brand: brandTab, email: emailTab, ai: aiTab }[tab])(host); } catch (e) { host.append(h('div', { class: 'notice err' }, e.message || String(e))); }
+    try { await ({ pay: payTab, access: accessTab, dashboard: dashboardTab, brand: brandTab, email: emailTab, hr: hrTab, ai: aiTab }[tab])(host); } catch (e) { host.append(h('div', { class: 'notice err' }, e.message || String(e))); }
   }
   await show();
 }

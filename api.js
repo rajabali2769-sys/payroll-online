@@ -115,7 +115,7 @@ const listeners = new Set();
 export const onLive = (cb) => { listeners.add(cb); return () => listeners.delete(cb); };
 export function startLive(statusCb) {
   const ch = sb.channel('payroll-live');
-  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects']) {
+  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects', 'hr_cases', 'hr_case_events']) {
     ch.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => {
       const evt = { table, type: p.eventType, row: p.new && Object.keys(p.new).length ? p.new : null, old: p.old && Object.keys(p.old).length ? p.old : null };
       listeners.forEach((cb) => { try { cb(evt); } catch (e) { console.error(e); } });
@@ -412,7 +412,7 @@ export const loadLineAdhoc = async (lineId) => ok(await sb.from('adhoc_hours').s
 export async function addAdhoc(lineId, entries) { if (entries.length) ok(await sb.from('adhoc_hours').upsert(entries.map((e) => ({ line_id: lineId, work_date: e.date, hours: +e.hours || 0, note: e.note || null })), { onConflict: 'line_id,work_date' })); }
 export const deleteAdhoc = async (id) => ok(await sb.from('adhoc_hours').delete().eq('id', id));
 
-export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract').order('full_name').order('id'));
+export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,emp_status').order('full_name').order('id'));
 export const setEmployeeFields = async (id, patch) => ok(await sb.from('employees').update(patch).eq('id', id));
 // rows from parseEmployeeRows(); match on NI number, then on name; create anyone missing; only fill in what the file actually contains
 export async function saveEmployeesList(rows) {
@@ -444,3 +444,59 @@ export async function applyEmployeeBudgets(run) {
 }
 
 export const deleteAdhocDay = async (lineId, date) => ok(await sb.from('adhoc_hours').delete().eq('line_id', lineId).eq('work_date', date));
+
+
+// =====================================================================================================
+// v4.4: HR — employee records, HR cases, recruitment new starters
+// =====================================================================================================
+export const STAFF_COLS = 'id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,employment_type,emp_status,job_title,contracted_weeks,shift_days,shift_start,shift_end,weekly_hours,weekly_pay,rtw_type,rtw_expiry,hire_date,termination_date,termination_reason,suspended_from,payroll_state,payroll_run_id,payroll_added_at,payroll_added_by,added_by_email,hr_notes,created_at,updated_at';
+export const loadStaff = async () => fetchAll(() => sb.from('employees').select(STAFF_COLS).order('full_name').order('id'));
+export const loadStaffOne = async (id) => ok(await sb.from('employees').select(STAFF_COLS).eq('id', id).maybeSingle());
+export async function addStaff(row) {
+  const id = crypto.randomUUID();
+  ok(await sb.from('employees').insert({ id, name_key: normKey(row.full_name), ...row }));
+  return id;
+}
+export async function updateStaff(id, patch) { const p = { ...patch }; if (p.full_name) p.name_key = normKey(p.full_name); ok(await sb.from('employees').update(p).eq('id', id)); return loadStaffOne(id); }
+export const loadPendingCount = async () => { const { count, error } = await sb.from('employees').select('id', { count: 'exact', head: true }).eq('payroll_state', 'pending'); if (error) throw new Error(error.message); return count || 0; };
+export const loadEmployeeLines = async (empId) => ok(await sb.from('v_payroll_lines').select('id,run_id,run_label,stream,project_name,site_name,contract_type,hourly_rate,actual_hours,gross_pay,budget_status').eq('employee_id', empId).order('run_id').limit(200));
+
+// HR cases
+export const loadCases = async () => fetchAll(() => sb.from('hr_cases').select('*').order('opened_on', { ascending: false }).order('id'));
+export const loadCasesFor = async (empId) => ok(await sb.from('hr_cases').select('*').eq('employee_id', empId).order('opened_on', { ascending: false }));
+export const loadCase = async (id) => ok(await sb.from('hr_cases').select('*').eq('id', id).maybeSingle());
+export const addCase = async (row) => ok(await sb.from('hr_cases').insert(row).select().single());
+export const updateCase = async (id, patch) => ok(await sb.from('hr_cases').update(patch).eq('id', id).select().single());
+export const deleteCase = async (id) => ok(await sb.from('hr_cases').delete().eq('id', id));
+export const loadCaseEvents = async (caseId) => ok(await sb.from('hr_case_events').select('*').eq('case_id', caseId).order('created_at', { ascending: false }));
+export const addCaseEvent = async (row) => ok(await sb.from('hr_case_events').insert(row));
+export async function uploadHrFile(caseId, file) {
+  const path = `${caseId}/${Date.now()}_${file.name.replace(/[^\w.\-]+/g, '_')}`;
+  const { error } = await sb.storage.from('hr').upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw new Error('Could not store the file: ' + error.message);
+  return path;
+}
+export async function hrFileUrl(path) { const { data, error } = await sb.storage.from('hr').createSignedUrl(path, 3600); if (error) throw new Error(error.message); return data.signedUrl; }
+
+// Recruitment → payroll: put a new starter on a pay run (one line, a week row for every week they can work in that window)
+export async function moveToPayroll(emp, run, { pay_group = null, site = null } = {}) {
+  const have = ok(await sb.from('payroll_lines').select('id').eq('run_id', run.id).eq('employee_id', emp.id).limit(1));
+  let id = have.length ? have[0].id : null;
+  if (!id) {
+    const periods = await loadPeriods(run.id), p = periods.find((x) => x.pay_group === pay_group);
+    const from = (p && p.reconcile_from) || run.period_start, to = (p && p.reconcile_to) || run.period_end;
+    const weeks = [];
+    if (from && to) {
+      const start = emp.hire_date && ymd(emp.hire_date) > ymd(from) ? emp.hire_date : from;
+      for (let w = mondayOf(start); w <= ymd(to); w = plus(w, 7)) weeks.push(w);
+    }
+    const type = emp.employment_type === 'permanent' ? 'Hourly' : 'Cover';
+    id = await createLine(run.id, { employee_id: emp.id, employee_name: emp.full_name, ni_number: emp.ni_number || null, project_name: emp.default_project, site_name: site || emp.default_site || null,
+      contract_type: type, hourly_rate: num0(emp.default_rate), budgeted_hours: num0(emp.weekly_hours), pay_group, status: 'new starter',
+      remarks: `New starter (${emp.employment_type}) added ${new Date().toISOString().slice(0, 10)}${emp.hire_date ? ' · start ' + ymd(emp.hire_date) : ''}` }, weeks, num0(emp.weekly_hours));
+  }
+  const me = (await sb.auth.getUser()).data.user;
+  ok(await sb.from('employees').update({ payroll_state: 'in_payroll', payroll_run_id: run.id, payroll_added_at: new Date().toISOString(), payroll_added_by: me ? me.email : null }).eq('id', emp.id));
+  return { lineId: id, existed: have.length > 0 };
+}
+export const loadRunEmployeeHours = async (runId) => fetchAll(() => sb.from('v_payroll_lines').select('employee_id,employee_name,actual_hours').eq('run_id', runId).order('id'));

@@ -14,6 +14,9 @@ const PAGES = {
   explorer:   { title: 'Hours explorer',  icon: 'search', group: 'Reports',  perm: 'page:explorer',   load: () => import('./explorer.js') },
   journal:    { title: 'Manual journal',  icon: 'book',   group: 'Reports',  perm: 'page:journal',    load: () => import('./journal.js') },
   payslips:   { title: 'Payslips',        icon: 'pound',  group: 'Reports',  perm: 'page:payslips',   load: () => import('./payslips.js') },
+  staff:      { title: 'Employees',       icon: 'users',  group: 'HR',       perm: 'page:staff',      load: () => import('./staff.js') },
+  hrcases:    { title: 'HR cases',        icon: 'alert',  group: 'HR',       perm: 'page:hrcases',    load: () => import('./hrcases.js') },
+  recruit:    { title: 'New starters',    icon: 'plus',   group: 'HR',       perm: 'page:recruit',    load: () => import('./recruit.js') },
   hours:      { title: 'Upload hours',    icon: 'upload', group: 'Setup',    perm: 'page:hours',      load: () => import('./hours.js') },
   import:     { title: 'Import Excel',    icon: 'upload', group: 'Setup',    perm: 'page:import',     load: () => import('./imports.js') },
   calendar:   { title: 'Pay calendar',    icon: 'cal',    group: 'Setup',    perm: 'page:calendar',   load: () => import('./calendar.js') },
@@ -115,18 +118,25 @@ function shell() {
   for (const [k, d] of Object.entries(PAGES)) {
     if (!ctx.can(d.perm)) continue;
     if (d.group !== lastGroup) { navItems.push(h('div', { class: 'grp' }, d.group)); lastGroup = d.group; }
-    navItems.push(h('a', { href: '#/' + k, 'data-page': k }, icon(d.icon), d.title));
+    navItems.push(h('a', { href: '#/' + k, 'data-page': k }, icon(d.icon), d.title, k === 'recruit' ? h('span', { class: 'navbadge hidden' }) : null));
   }
   const nav = h('nav', { class: 'nav' }, navItems);
-  curBox = h('div', { class: 'curbox' });
+  curBox = ctx.can('page:payroll') ? h('div', { class: 'curbox' }) : null;
   const B = brandCfg();
   clear(root).append(h('div', { class: 'shell' },
     h('aside', { class: 'side' }, brand(true), curBox, nav,
-      h('div', { class: 'me' }, liveEl, h('div', { style: { marginTop: '10px' } }, h('b', null, ctx.me.email), { super_admin: 'Super admin', admin: 'Admin', editor: 'Editor', viewer: 'Viewer' }[ctx.me.role] || ctx.me.role),
+      h('div', { class: 'me' }, liveEl, h('div', { style: { marginTop: '10px' } }, h('b', null, ctx.me.email), { super_admin: 'Super admin', admin: 'Admin', editor: 'Editor', viewer: 'Viewer', hr: 'HR team', recruitment: 'Recruitment' }[ctx.me.role] || ctx.me.role),
         h('button', { class: 'btn sm', onClick: () => auth.signOut() }, 'Sign out'),
         h('div', { class: 'credit', onClick: () => ownerPopup(true) }, `Designed by ${B.owner_name}`), h('div', { class: 'credit ver', title: 'Which version of the website is running' }, 'Version ' + (window.__BUILD || 'old')))),
     mainEl));
   paintCurrent();
+  paintBadge();
+}
+let badgeOn = false;
+async function paintBadge() {
+  const b = document.querySelector('.nav a[data-page="recruit"] .navbadge'); if (!b) return;
+  try { const { loadPendingCount } = await import('./api.js'); const n = await loadPendingCount(); b.textContent = String(n); b.classList.toggle('hidden', !n); b.title = `${n} new starter(s) waiting for payroll`; } catch { /* older database */ }
+  if (!badgeOn) { badgeOn = true; onLive(debounce((e) => { if (e.table === 'employees') paintBadge(); }, 1200)); }
 }
 export function applyBranding() {
   const B = brandCfg(), r = document.documentElement.style;
