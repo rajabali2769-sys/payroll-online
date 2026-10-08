@@ -16,7 +16,7 @@ const PAGES = {
   payslips:   { title: 'Payslips',        icon: 'pound',  group: 'Reports',  perm: 'page:payslips',   load: () => import('./payslips.js') },
   staff:      { title: 'Employees',       icon: 'users',  group: 'HR',       perm: 'page:staff',      load: () => import('./staff.js') },
   hrcases:    { title: 'HR cases',        icon: 'alert',  group: 'HR',       perm: 'page:hrcases',    load: () => import('./hrcases.js') },
-  recruit:    { title: 'New starters',    icon: 'plus',   group: 'HR',       perm: 'page:recruit',    load: () => import('./recruit.js') },
+  recruit:    { title: 'New starters & covers',    icon: 'plus',   group: 'HR',       perm: 'page:recruit',    load: () => import('./recruit.js') },
   hours:      { title: 'Upload hours',    icon: 'upload', group: 'Setup',    perm: 'page:hours',      load: () => import('./hours.js') },
   import:     { title: 'Import Excel',    icon: 'upload', group: 'Setup',    perm: 'page:import',     load: () => import('./imports.js') },
   calendar:   { title: 'Pay calendar',    icon: 'cal',    group: 'Setup',    perm: 'page:calendar',   load: () => import('./calendar.js') },
@@ -120,7 +120,10 @@ function shell() {
     if (d.group !== lastGroup) { navItems.push(h('div', { class: 'grp' }, d.group)); lastGroup = d.group; }
     navItems.push(h('a', { href: '#/' + k, 'data-page': k }, icon(d.icon), d.title, k === 'recruit' ? h('span', { class: 'navbadge hidden' }) : null));
   }
-  const nav = h('nav', { class: 'nav' }, navItems);
+  const canFind = ctx.can('page:staff') || ctx.can('page:recruit') || ctx.can('page:people');
+  const finder = canFind ? h('button', { class: 'navsearch', onClick: () => import('./search.js').then((m) => m.quickSearch()) }, icon('search'), h('span', { class: 'grow' }, 'Find employee'), h('kbd', null, 'Ctrl K')) : null;
+  if (canFind && !window.__qsBound) { window.__qsBound = true; document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (!document.querySelector('.modal-wrap')) import('./search.js').then((m) => m.quickSearch()); } }); }
+  const nav = h('nav', { class: 'nav' }, finder, navItems);
   curBox = ctx.can('page:payroll') ? h('div', { class: 'curbox' }) : null;
   const B = brandCfg();
   clear(root).append(h('div', { class: 'shell' },

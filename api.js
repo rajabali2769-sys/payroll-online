@@ -115,7 +115,7 @@ const listeners = new Set();
 export const onLive = (cb) => { listeners.add(cb); return () => listeners.delete(cb); };
 export function startLive(statusCb) {
   const ch = sb.channel('payroll-live');
-  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects', 'hr_cases', 'hr_case_events']) {
+  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects', 'hr_cases', 'hr_case_events', 'cover_assignments', 'cover_hours']) {
     ch.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => {
       const evt = { table, type: p.eventType, row: p.new && Object.keys(p.new).length ? p.new : null, old: p.old && Object.keys(p.old).length ? p.old : null };
       listeners.forEach((cb) => { try { cb(evt); } catch (e) { console.error(e); } });
@@ -412,7 +412,7 @@ export const loadLineAdhoc = async (lineId) => ok(await sb.from('adhoc_hours').s
 export async function addAdhoc(lineId, entries) { if (entries.length) ok(await sb.from('adhoc_hours').upsert(entries.map((e) => ({ line_id: lineId, work_date: e.date, hours: +e.hours || 0, note: e.note || null })), { onConflict: 'line_id,work_date' })); }
 export const deleteAdhoc = async (id) => ok(await sb.from('adhoc_hours').delete().eq('id', id));
 
-export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,emp_status').order('full_name').order('id'));
+export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,employee_code,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,emp_status').order('full_name').order('id'));
 export const setEmployeeFields = async (id, patch) => ok(await sb.from('employees').update(patch).eq('id', id));
 // rows from parseEmployeeRows(); match on NI number, then on name; create anyone missing; only fill in what the file actually contains
 export async function saveEmployeesList(rows) {
@@ -449,7 +449,7 @@ export const deleteAdhocDay = async (lineId, date) => ok(await sb.from('adhoc_ho
 // =====================================================================================================
 // v4.4: HR — employee records, HR cases, recruitment new starters
 // =====================================================================================================
-export const STAFF_COLS = 'id,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,employment_type,emp_status,job_title,contracted_weeks,shift_days,shift_start,shift_end,weekly_hours,weekly_pay,rtw_type,rtw_expiry,hire_date,termination_date,termination_reason,suspended_from,payroll_state,payroll_run_id,payroll_added_at,payroll_added_by,added_by_email,hr_notes,created_at,updated_at';
+export const STAFF_COLS = 'id,employee_code,pay_group,al_entitlement,al_carry,al_taken_before,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,employment_type,emp_status,job_title,contracted_weeks,shift_days,shift_start,shift_end,weekly_hours,weekly_pay,rtw_type,rtw_expiry,hire_date,termination_date,termination_reason,suspended_from,payroll_state,payroll_run_id,payroll_added_at,payroll_added_by,added_by_email,hr_notes,created_at,updated_at';
 export const loadStaff = async () => fetchAll(() => sb.from('employees').select(STAFF_COLS).order('full_name').order('id'));
 export const loadStaffOne = async (id) => ok(await sb.from('employees').select(STAFF_COLS).eq('id', id).maybeSingle());
 export async function addStaff(row) {
@@ -500,3 +500,64 @@ export async function moveToPayroll(emp, run, { pay_group = null, site = null } 
   return { lineId: id, existed: have.length > 0 };
 }
 export const loadRunEmployeeHours = async (runId) => fetchAll(() => sb.from('v_payroll_lines').select('employee_id,employee_name,actual_hours').eq('run_id', runId).order('id'));
+
+// =====================================================================================================
+// v4.5: employee IDs, bulk upload, delete, annual leave, cover assignments & hours
+// =====================================================================================================
+export async function deleteEmployees(ids) { let n = 0; for (const part of chunk(ids, 100)) { const d = ok(await sb.from('employees').delete().in('id', part).select('id')); n += d.length; } return n; }
+export const loadAlBalances = async () => fetchAll(() => sb.from('v_al_balance').select('*').order('employee_id'));
+export const loadAlOne = async (id) => { const d = ok(await sb.rpc('al_summary', { p_emp: id })); return d && d[0] ? d[0] : null; };
+export const loadEmployeeLeave = async (empId) => ok(await sb.from('v_leave').select('leave_date,type_code,type_name,hours,project_name,line_id').in('line_id', (ok(await sb.from('payroll_lines').select('id').eq('employee_id', empId))).map((l) => l.id).concat(['00000000-0000-0000-0000-000000000000'])).order('leave_date', { ascending: false }).limit(400));
+// rows already parsed by the importer: match on Employee ID, then NI number, then name; new people get an ID from the database
+export async function importStaff(rows, { onProgress = () => {} } = {}) {
+  const emps = await loadStaff();
+  const byCode = new Map(emps.filter((e) => e.employee_code).map((e) => [e.employee_code.toUpperCase(), e])), byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e])), byName = new Map(emps.map((e) => [e.name_key, e]));
+  let created = 0, updated = 0; const fresh = [];
+  let i = 0;
+  for (const r of rows) {
+    const nk = normKey(r.full_name || '');
+    const cur = (r.employee_code && byCode.get(String(r.employee_code).toUpperCase())) || (r.ni_number && byNi.get(r.ni_number)) || (nk && byName.get(nk));
+    const patch = {}; for (const [k, v] of Object.entries(r)) if (v !== null && v !== undefined && v !== '') patch[k] = v;
+    if (cur) { delete patch.employee_code; if (Object.keys(patch).length) { ok(await sb.from('employees').update({ ...patch, ...(patch.full_name ? { name_key: nk } : {}) }).eq('id', cur.id)); } updated++; }
+    else { fresh.push({ id: crypto.randomUUID(), name_key: nk, ...patch }); created++; }
+    onProgress(++i / rows.length);
+  }
+  for (const part of chunk(fresh, 200)) ok(await sb.from('employees').insert(part));
+  const codes = fresh.length ? (await fetchAll(() => sb.from('employees').select('id,employee_code').in('id', fresh.map((f) => f.id)).order('id'))) : [];
+  return { created, updated, newIds: codes };
+}
+
+export const loadAssignments = async () => fetchAll(() => sb.from('cover_assignments').select('*').order('date_from', { ascending: false }).order('id'));
+export const addAssignments = async (rows) => ok(await sb.from('cover_assignments').insert(rows).select());
+export const updateAssignment = async (id, patch) => ok(await sb.from('cover_assignments').update(patch).eq('id', id));
+export const deleteAssignment = async (id) => ok(await sb.from('cover_assignments').delete().eq('id', id));
+export const loadCoverHours = async (from) => fetchAll(() => { let q = sb.from('cover_hours').select('*').order('work_date').order('id'); if (from) q = q.gte('work_date', from); return q; });
+export async function saveCoverHours(rows) {
+  // one row per cover per day per assignment; hours 0 / empty removes the day
+  const del = rows.filter((r) => !(+r.hours > 0)), put = rows.filter((r) => +r.hours > 0);
+  for (const r of del) { let q = sb.from('cover_hours').delete().eq('cover_employee_id', r.cover_employee_id).eq('work_date', r.work_date); q = r.assignment_id ? q.eq('assignment_id', r.assignment_id) : q.is('assignment_id', null); ok(await q); }
+  for (const r of put) {
+    let q = sb.from('cover_hours').select('id,hours').eq('cover_employee_id', r.cover_employee_id).eq('work_date', r.work_date); q = r.assignment_id ? q.eq('assignment_id', r.assignment_id) : q.is('assignment_id', null);
+    const cur = ok(await q.maybeSingle());
+    if (cur) { if (+cur.hours !== +r.hours || r.file_path) ok(await sb.from('cover_hours').update({ hours: +r.hours, note: r.note ?? null, source: r.source || 'manual', ...(r.file_path ? { file_path: r.file_path } : {}) }).eq('id', cur.id)); }
+    else ok(await sb.from('cover_hours').insert({ cover_employee_id: r.cover_employee_id, assignment_id: r.assignment_id || null, work_date: r.work_date, hours: +r.hours, note: r.note || null, source: r.source || 'manual', file_path: r.file_path || null }));
+  }
+}
+export async function uploadCoverFile(empId, file) {
+  const path = `${empId}/${Date.now()}_${file.name.replace(/[^\w.\-]+/g, '_')}`;
+  const { error } = await sb.storage.from('cover').upload(path, file, { contentType: file.type || undefined, upsert: false });
+  if (error) throw new Error('Could not store the file: ' + error.message);
+  return path;
+}
+export async function coverFileUrl(path) { const { data, error } = await sb.storage.from('cover').createSignedUrl(path, 3600); if (error) throw new Error(error.message); return data.signedUrl; }
+// Send unsent cover hours into a pay run (creates the cover's line if needed) and mark them as sent
+export async function syncCoverHours(run, emp, hoursRows, payGroup) {
+  const days = hoursRows.map((r) => ({ date: ymd(r.work_date), hours: +r.hours }));
+  const byDate = new Map(); for (const d of days) byDate.set(d.date, (byDate.get(d.date) || 0) + d.hours);
+  const entry = { project: emp.default_project, site: emp.default_site || null, employee_name: emp.full_name, ni: emp.ni_number || null, rate: emp.default_rate, contract_type: 'Cover', pay_group: payGroup || emp.pay_group || null, budget_hours: emp.weekly_hours || 0, days: [...byDate].map(([date, hours]) => ({ date, hours })) };
+  const res = await commitEntries(run, [entry]);
+  const me = (await sb.auth.getUser()).data.user;
+  for (const part of chunk(hoursRows.map((r) => r.id), 100)) ok(await sb.from('cover_hours').update({ synced_run_id: run.id, synced_at: new Date().toISOString(), synced_by_email: me ? me.email : null }).in('id', part));
+  if (emp.payroll_state === 'pending') ok(await sb.from('employees').update({ payroll_state: 'in_payroll', payroll_run_id: run.id, payroll_added_at: new Date().toISOString(), payroll_added_by: me ? me.email : null }).eq('id', emp.id));
+  return res;
+}

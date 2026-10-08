@@ -3,7 +3,8 @@ import { h, dmy } from './ui.js';
 import { ctx, brand } from './ctx.js';
 
 export const EMP_STATUS = [['active', 'Active'], ['suspended', 'Suspended'], ['terminated', 'Terminated']];
-export const EMP_TYPES = [['permanent', 'Permanent'], ['temporary', 'Temporary'], ['cover', 'Cover']];
+export const EMP_TYPES = [['permanent', 'Permanent'], ['cover', 'Temporary / cover']];
+export const COVER_REASONS = ['Annual leave', 'Sickness', 'Vacancy', 'Suspension', 'Training', 'Other'];
 export const CASE_TYPES = ['Investigation', 'Disciplinary', 'Suspension', 'Grievance', 'Absence / attendance', 'Performance / capability', 'Probation', 'Complaint (client / colleague)', 'Other'];
 export const CATEGORIES = ['Misconduct', 'Gross misconduct', 'Lateness / timekeeping', 'Unauthorised absence', 'Attendance (Bradford)', 'Health & safety', 'Conduct on client site', 'Theft / fraud', 'Bullying / harassment', 'Performance / standards', 'Right to work', 'Other'];
 export const SEVERITY = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['gross', 'Gross misconduct']];
@@ -11,7 +12,7 @@ export const STAGES = [['open', 'Open'], ['investigation', 'Investigation'], ['h
 export const OUTCOMES = ['No further action', 'Informal advice / guidance', 'Verbal warning', 'First written warning', 'Final written warning', 'Dismissal', 'Dismissal (gross misconduct)', 'Grievance upheld', 'Grievance partly upheld', 'Grievance not upheld', 'Resolved informally', 'Withdrawn'];
 export const stageName = (k) => (STAGES.find((s) => s[0] === k) || [k, k])[1];
 export const statusName = (k) => (EMP_STATUS.find((s) => s[0] === k) || [k, k || 'Active'])[1];
-export const typeName = (k) => (EMP_TYPES.find((s) => s[0] === k) || [k, k || 'Permanent'])[1];
+export const typeName = (k) => (k === 'temporary' ? 'Temporary / cover' : (EMP_TYPES.find((s) => s[0] === k) || [k, k || 'Permanent'])[1]);
 export const sevName = (k) => (SEVERITY.find((s) => s[0] === k) || [k, k])[1];
 export const isCover = (e) => e.employment_type === 'temporary' || e.employment_type === 'cover';
 
@@ -32,7 +33,7 @@ export const weeklyPay = (e) => Math.round((+e.weekly_hours || 0) * (+e.default_
 export const activeWarning = (cases) => cases.filter((c) => c.warning_level && c.warning_expiry && c.warning_expiry >= today()).sort((a, b) => String(b.warning_expiry).localeCompare(String(a.warning_expiry)))[0] || null;
 
 export const statusChip = (s) => h('span', { class: 'hpill s-' + (s || 'active') }, statusName(s || 'active'));
-export const typeChip = (t) => h('span', { class: 'hpill t-' + (t || 'permanent') }, typeName(t || 'permanent'));
+export const typeChip = (t) => h('span', { class: 'hpill t-' + (t === 'temporary' ? 'cover' : t || 'permanent') }, typeName(t || 'permanent'));
 export const stageChip = (s) => h('span', { class: 'hpill g-' + s }, stageName(s));
 export const sevChip = (s) => h('span', { class: 'hpill v-' + s }, sevName(s));
 export function rtwChip(iso) {
@@ -317,3 +318,19 @@ export function printLetter(l) {
   const w = window.open('', '_blank'); if (!w) throw new Error('Allow pop-ups for this site to print letters.');
   w.document.open(); w.document.write(letterHtml(l, true)); w.document.close();
 }
+
+// Annual leave in the browser (same rule as the database function al_summary): entitlement/12 a month from the hire date
+export function alCalc(e, on = today()) {
+  const sm = Math.min(12, Math.max(1, +(hrCfg().leave_year_start_month || 1)));
+  const [y, m] = on.split('-').map(Number);
+  const ys = `${m < sm ? y - 1 : y}-${String(sm).padStart(2, '0')}-01`, ye = addMonths(ys, 12).replace(/-(\d+)$/, '-01');
+  const yeLast = new Date(Date.parse(ye + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const st = e.hire_date && e.hire_date > ys ? e.hire_date : ys, en = e.termination_date && e.termination_date < yeLast ? e.termination_date : yeLast;
+  const mi = (d) => +d.slice(0, 4) * 12 + +d.slice(5, 7);
+  const rate = (+e.al_entitlement || 20) / 12, monthsYear = Math.max(0, mi(en) - mi(st) + 1);
+  const upto = on < en ? on : en, nxt = new Date(Date.parse(upto + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+  let done = mi(nxt) - mi(st); if (+nxt.slice(8) < +st.slice(8)) done--; done = Math.max(0, Math.min(monthsYear, done));
+  const r2 = (n) => Math.round(n * 100) / 100, carry = +e.al_carry || 0;
+  return { year_start: ys, year_end: yeLast, per_month: rate, entitlement: r2(rate * monthsYear + carry), accrued: r2(rate * done + carry) };
+}
+export const empLabel = (e) => `${e.employee_code ? e.employee_code + ' · ' : ''}${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}`;

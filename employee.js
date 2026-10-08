@@ -31,7 +31,7 @@ function authScreen(note) {
       if (mode === 'in') { const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value }); if (error) throw error; await boot(); }
       else { const { data, error } = await sb.auth.signUp({ email: email.value.trim(), password: pw.value, options: { emailRedirectTo: location.href.split('#')[0] } }); if (error) throw error; if (data.session) await boot(); else show('Almost there — we have emailed you a link. Open it to confirm your email, then sign in here.'); }
     } catch (er) { show(er.message || String(er), true); } finally { btn.disabled = false; }
-  } }, title, h('div', { class: 'muted small' }, 'See your hours, earnings and payslips. Use the same email your employer has on file for you.'), note ? h('div', { class: 'notice', style: { marginTop: '12px' } }, note) : null, h('label', null, 'Email'), email, h('label', null, 'Password'), pw, h('div', { style: { marginTop: '14px' } }, btn), msg, toggle, forgot);
+  } }, title, h('div', { class: 'muted small' }, 'See your hours, earnings, leave and payslips. Use the same email your employer has on file for you.'), note ? h('div', { class: 'notice', style: { marginTop: '12px' } }, note) : null, h('label', null, 'Email'), email, h('label', null, 'Password'), pw, h('div', { style: { marginTop: '14px' } }, btn), msg, toggle, forgot);
   clear(root).append(h('div', { class: 'auth' }, h('div', { class: 'box' }, form)));
 }
 
@@ -39,9 +39,9 @@ function authScreen(note) {
 async function load() {
   const rpc = async (name, args) => { const { data, error } = await sb.rpc(name, args || {}); if (error) throw error; return data || []; };
   try {
-    const [prof, days, periods, slips, brand] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {})]);
-    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, offline: false });
-    try { localStorage.setItem(cacheKey('data'), JSON.stringify({ profile: S.profile, days, periods, slips, brand, at: Date.now() })); } catch { /* private mode */ }
+    const [prof, days, periods, slips, brand, lv, lvDays] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {}), rpc('my_leave').catch(() => []), rpc('my_leave_days').catch(() => [])]);
+    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, leave: lv[0] || null, leaveDays: lvDays, offline: false });
+    try { localStorage.setItem(cacheKey('data'), JSON.stringify({ profile: S.profile, days, periods, slips, brand, leave: S.leave, leaveDays: lvDays, at: Date.now() })); } catch { /* private mode */ }
   } catch (e) {
     const c = (() => { try { return JSON.parse(localStorage.getItem(cacheKey('data'))); } catch { return null; } })();
     if (!c) throw e; Object.assign(S, c, { offline: true });
@@ -76,6 +76,20 @@ function periodsView() {
       h('div', { class: 'big', style: { margin: '8px 0 2px' } }, money(p.gross)), h('div', { class: 'small muted' }, 'gross pay before tax and deductions'),
       h('div', { class: 'row small', style: { marginTop: '10px', gap: '18px' } }, h('div', null, h('b', null, hrs(p.hours)), ' hours'), p.leave ? h('div', null, h('b', null, hrs(p.leave)), ' paid leave h') : null, p.ssp ? h('div', null, h('b', null, money(p.ssp)), ' SSP') : null)); });
 }
+function leaveView() {
+  const L = S.leave, r = (n) => String(Math.round(num(n) * 100) / 100);
+  if (!L) return h('div', { class: 'card muted' }, 'Your leave record is not available yet. Please ask HR.');
+  const pct = Math.max(0, Math.min(100, (num(L.taken) + num(L.booked)) / Math.max(num(L.entitlement), 0.01) * 100));
+  const tile = (l, v, sub) => h('div', { style: { flex: '1', background: '#f6f7fd', borderRadius: '12px', padding: '10px' } }, h('div', { class: 'small muted' }, l), h('div', { style: { fontSize: '22px', fontWeight: 800 } }, v), sub ? h('div', { class: 'small muted' }, sub) : null);
+  const byType = new Map(); for (const d of S.leaveDays || []) { const k = d.type_name; byType.set(k, (byType.get(k) || 0) + 1); }
+  return [h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', { class: 'grow' }, 'Annual leave'), h('span', { class: 'pill' }, `${dmy(L.year_start)} – ${dmy(L.year_end)}`)),
+      h('div', { class: 'row', style: { marginTop: '12px', alignItems: 'flex-end' } }, h('div', { class: 'grow' }, h('div', { class: 'small muted' }, 'Available now'), h('div', { class: 'big' }, r(L.available) + ' days')), h('div', { class: 'right' }, h('div', { class: 'small muted' }, 'Left this year'), h('div', { style: { fontSize: '22px', fontWeight: 800 } }, r(L.remaining)))),
+      h('div', { class: 'bar', style: { margin: '12px 0 6px' } }, h('i', { style: { width: pct + '%' } })),
+      h('div', { class: 'row', style: { gap: '8px', marginTop: '10px' } }, tile('This year', r(L.entitlement)), tile('Built up', r(L.accrued), `${r(L.per_month)} a month`), tile('Taken', r(L.taken), num(L.booked) ? `+${r(L.booked)} booked` : null)),
+      h('div', { class: 'small muted', style: { marginTop: '10px' } }, `Leave builds up every month you work${L.hire_date ? ', from ' + dmy(L.hire_date) : ''}. Ask your manager or HR to book leave.${L.employee_code ? ' Your employee ID: ' + L.employee_code : ''}`)),
+    byType.size ? h('div', { class: 'card' }, h('b', null, 'Your leave this past year'), h('div', { class: 'small muted', style: { margin: '4px 0 8px' } }, [...byType].map(([k, n]) => `${k}: ${n} day${n > 1 ? 's' : ''}`).join(' · ')),
+      (S.leaveDays || []).slice(0, 60).map((d) => h('div', { class: 'day' }, h('div', { class: 'd' }, h('b', null, String(+String(d.leave_date).slice(8, 10))), h('span', null, dmy(d.leave_date).split(' ')[1])), h('div', { class: 'grow' }, h('b', null, d.type_name), h('div', { class: 'small muted' }, d.project_name || '')), h('div', { class: 'right small' }, d.hours ? hrs(d.hours) + ' h' : '')))) : h('div', { class: 'card muted' }, 'No leave recorded in the past year.')];
+}
 function slipsView() {
   if (!S.slips.length) return h('div', { class: 'card muted' }, 'No payslips are available yet. They appear here when your employer publishes them.');
   return S.slips.map((p) => { const row = (a, b, cls) => h('tr', { class: cls || '' }, h('td', null, a), h('td', null, b)), other = Math.round((num(p.net) - num(p.ee_pension) - num(p.student_loan) - num(p.attachment) + num(p.expenses) - num(p.takehome)) * 100) / 100;
@@ -86,8 +100,8 @@ function slipsView() {
 function draw() {
   const B = S.brand || {}, name = B.app_name || 'Payroll Online';
   const body = !S.profile ? h('div', { class: 'card' }, h('h3', { style: { marginTop: 0 } }, 'We cannot find your details yet'), h('p', { class: 'muted' }, 'Your sign-in email has to match the email your employer holds for you. Please ask the payroll team to add it, then open this app again.'))
-    : S.tab === 'week' ? weekView() : S.tab === 'periods' ? periodsView() : slipsView();
-  const tabs = [['week', '📅', 'Hours'], ['periods', '💷', 'Pay periods'], ['slips', '🧾', 'Payslips']];
+    : S.tab === 'week' ? weekView() : S.tab === 'periods' ? periodsView() : S.tab === 'leave' ? leaveView() : slipsView();
+  const tabs = [['week', '📅', 'Hours'], ['periods', '💷', 'Earnings'], ['leave', '🌴', 'Leave'], ['slips', '🧾', 'Payslips']];
   clear(root).append(
     h('div', { class: 'top noprint' }, h('div', { class: 'row' }, h('div', { class: 'grow' }, h('h1', null, `Hi ${firstName()} 👋`), h('div', { class: 'sub' }, `${name}${B.company ? ' · ' + B.company : ''}`)), h('button', { class: 'btn sm ghost', style: { background: 'rgba(255,255,255,.2)', color: '#fff' }, onClick: async () => { await sb.auth.signOut(); localStorage.removeItem(cacheKey('data')); authScreen(); } }, 'Sign out'))),
     h('div', { class: 'wrap' }, S.offline ? h('div', { class: 'notice' }, 'You are offline — showing the last information saved on this phone.') : null,

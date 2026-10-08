@@ -15,9 +15,9 @@
   <script>
     // Payroll Online loader: before starting, re-download every code file so an old saved copy in the browser
     // can never be mixed with the new files (that mix caused "does not provide an export named ..." errors).
-    window.__BUILD = '4.4';
+    window.__BUILD = '4.5';
     (function () {
-      var FILES = ['adhoc.js', 'api.js', 'app.js', 'attendance.js', 'budgets.js', 'calc.js', 'calendar.js', 'chase.js', 'chatbot.js', 'ctx.js', 'customise.js', 'dashboard.js', 'escalate.js', 'explorer.js', 'history.js', 'hours.js', 'hrcase.js', 'hrcases.js', 'hrkit.js', 'hrsettings.js', 'imports.js', 'journal.js', 'leave.js', 'line-drawer.js', 'mail.js', 'parsers.js', 'payroll.js', 'payrolls.js', 'payslips.js', 'people.js', 'profile.js', 'projects.js', 'recruit.js', 'settings.js', 'staff.js', 'timesheet.js', 'timesheets.js', 'ui.js', 'users.js', 'widgets.js', 'xlsx.js', 'config.js', 'style.css'];
+      var FILES = ['adhoc.js', 'api.js', 'app.js', 'attendance.js', 'budgets.js', 'calc.js', 'calendar.js', 'chase.js', 'chatbot.js', 'ctx.js', 'customise.js', 'dashboard.js', 'escalate.js', 'explorer.js', 'history.js', 'hours.js', 'hrcase.js', 'hrcases.js', 'hrkit.js', 'hrsettings.js', 'importer.js', 'imports.js', 'journal.js', 'leave.js', 'line-drawer.js', 'mail.js', 'parsers.js', 'payroll.js', 'payrolls.js', 'panels.js', 'payslips.js', 'people.js', 'profile.js', 'projects.js', 'recruit.js', 'search.js', 'settings.js', 'specs.js', 'staff.js', 'timesheet.js', 'timesheets.js', 'ui.js', 'users.js', 'widgets.js', 'xlsx.js', 'config.js', 'style.css'];
       var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'style.css?v=' + window.__BUILD; document.head.appendChild(css);
       var go = function () { var s = document.createElement('script'); s.type = 'module'; s.src = 'app.js'; document.body.appendChild(s); };
       var refresh = function (f) { return fetch(f, { cache: 'reload' }).catch(function () {}); };

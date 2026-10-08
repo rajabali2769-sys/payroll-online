@@ -70,11 +70,11 @@ export function toast(msg, kind = '') {
   document.getElementById('toasts').append(t);
   setTimeout(() => t.remove(), kind === 'err' ? 7000 : 3200);
 }
-export function modal(title, bodyBuilder, { wide } = {}) {
+export function modal(title, bodyBuilder, { wide, xl } = {}) {
   const wrap = h('div', { class: 'modal-wrap' });
   const close = () => wrap.remove();
   wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
-  const box = h('div', { class: 'modal', style: wide ? { width: 'min(760px,100%)' } : null }, h('h2', null, title));
+  const box = h('div', { class: 'modal', style: xl ? { width: 'min(1120px,100%)' } : wide ? { width: 'min(760px,100%)' } : null }, h('h2', null, title));
   box.append(bodyBuilder(close));
   wrap.append(box);
   document.body.append(wrap);

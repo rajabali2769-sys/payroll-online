@@ -38,11 +38,12 @@ export async function hrTab(host) {
     const f = {};
     const wm = H.warning_months || {};
     clear(host).append(h('div', { class: 'grid', style: { gridTemplateColumns: 'minmax(320px,1fr) minmax(420px,2fr)', alignItems: 'start' } },
-      h('div', { class: 'card pad' }, h('h3', null, 'HR emails & letters'),
+      h('div', { class: 'card pad' }, h('h3', null, 'HR emails, letters & leave year'),
         h('div', { class: 'stack' }, fld('Signed by (name / job title)', (f.sender = h('input', { type: 'text', value: H.sender, disabled: !can }))), fld('Sign-off', (f.signoff = h('input', { type: 'text', value: H.signoff, disabled: !can }))),
           fld('Company address on letters', (f.address = h('textarea', { rows: 3, disabled: !can }, H.address || ''))), fld('Always copy HR emails to (comma separated)', (f.cc = h('input', { type: 'text', value: H.cc || '', placeholder: 'hr@crystalfm.co.uk', disabled: !can }))),
           h('div', { class: 'form-grid g3' }, fld('Verbal warning (months)', (f.v = h('input', { type: 'number', value: wm.verbal ?? 6, disabled: !can }))), fld('First written (months)', (f.f = h('input', { type: 'number', value: wm.first ?? 12, disabled: !can }))), fld('Final written (months)', (f.fi = h('input', { type: 'number', value: wm.final ?? 12, disabled: !can })))),
-          can ? h('button', { class: 'btn primary', onClick: () => save({ sender: f.sender.value.trim(), signoff: f.signoff.value.trim(), address: f.address.value.trim(), cc: f.cc.value.trim(), warning_months: { verbal: +f.v.value || 6, first: +f.f.value || 12, final: +f.fi.value || 12 } }) }, 'Save') : null)),
+          fld('Leave year starts in', (f.lys = h('select', { disabled: !can }, ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => h('option', { value: i + 1, selected: (+H.leave_year_start_month || 1) === i + 1 }, m))))),
+          can ? h('button', { class: 'btn primary', onClick: () => save({ leave_year_start_month: +f.lys.value || 1, sender: f.sender.value.trim(), signoff: f.signoff.value.trim(), address: f.address.value.trim(), cc: f.cc.value.trim(), warning_months: { verbal: +f.v.value || 6, first: +f.f.value || 12, final: +f.fi.value || 12 } }) }, 'Save') : null)),
       h('div', { class: 'card pad' }, h('div', { class: 'row' }, h('h3', { style: { margin: 0 } }, `Letter templates (${list.length})`), h('div', { class: 'grow' }),
         can ? h('button', { class: 'btn sm', onClick: async () => { if (await confirmBox('Reset templates?', 'Replace all templates with the standard set? Your own templates will be removed.', 'Reset', true)) { list = DEFAULT_TEMPLATES.map((t) => ({ ...t })); await save({ templates: list }, 'Standard templates restored'); } } }, 'Reset to standard') : null,
         can ? h('button', { class: 'btn sm primary', onClick: () => edit({}, true) }, icon('plus'), 'New template') : null),

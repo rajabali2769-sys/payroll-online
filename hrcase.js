@@ -197,9 +197,9 @@ export async function newCaseModal(empPreset, { onCreated } = {}) {
   const pocFor = (name) => projects.find((p) => p.name && name && p.name.toLowerCase() === String(name).toLowerCase()) || {};
   modal('Open a new HR case', (done) => {
     const f = {};
-    const empSel = empPreset ? null : h('input', { type: 'text', list: 'hr-emp-list', placeholder: 'Start typing a name…' });
-    const dl = empPreset ? null : h('datalist', { id: 'hr-emp-list' }, staff.filter((e) => e.emp_status !== 'terminated').map((e) => h('option', { value: `${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` })));
-    const findEmp = () => empPreset || staff.find((e) => `${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` === empSel.value) || staff.find((e) => e.full_name.toLowerCase() === empSel.value.trim().toLowerCase());
+    const empSel = empPreset ? null : h('input', { type: 'text', list: 'hr-emp-list', placeholder: 'Type an Employee ID or name…' });
+    const dl = empPreset ? null : h('datalist', { id: 'hr-emp-list' }, staff.filter((e) => e.emp_status !== 'terminated').map((e) => h('option', { value: `${e.employee_code ? e.employee_code + ' · ' : ''}${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` })));
+    const findEmp = () => empPreset || staff.find((e) => `${e.employee_code ? e.employee_code + ' · ' : ''}${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` === empSel.value) || staff.find((e) => e.full_name.toLowerCase() === empSel.value.trim().toLowerCase() || (e.employee_code && e.employee_code.toLowerCase() === empSel.value.trim().toLowerCase()));
     const mgr = h('input', { type: 'text' }), mgrMail = h('input', { type: 'email' });
     const fillPoc = () => { const e = findEmp(); if (!e) return; const p = pocFor(e.default_project); if (p.manager && !mgr.value) mgr.value = p.manager; if (p.manager_email && !mgrMail.value) mgrMail.value = p.manager_email; };
     if (empSel) empSel.addEventListener('change', fillPoc); setTimeout(fillPoc);
