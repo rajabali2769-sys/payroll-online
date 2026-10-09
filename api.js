@@ -561,3 +561,49 @@ export async function syncCoverHours(run, emp, hoursRows, payGroup) {
   if (emp.payroll_state === 'pending') ok(await sb.from('employees').update({ payroll_state: 'in_payroll', payroll_run_id: run.id, payroll_added_at: new Date().toISOString(), payroll_added_by: me ? me.email : null }).eq('id', emp.id));
   return res;
 }
+
+// =====================================================================================================
+// v4.6: custom reports, clock in / out
+// =====================================================================================================
+const inRuns = (q, runIds) => (runIds && runIds.length ? q.in('run_id', runIds) : q);
+export async function loadDataset(key, { runIds = [], from = null, to = null } = {}) {
+  switch (key) {
+    case 'employees': { const [rows, al] = await Promise.all([loadStaff(), loadAlBalances().catch(() => [])]); const m = new Map(al.map((a) => [a.employee_id, a])); return rows.map((e) => { const a = m.get(e.id) || {}; return { ...e, al_entitlement_year: a.entitlement ?? null, al_accrued: a.accrued ?? null, al_taken: a.taken ?? null, al_available: a.available ?? null, al_remaining: a.remaining ?? null }; }); }
+    case 'payroll_lines': return fetchAll(() => inRuns(sb.from('v_payroll_lines').select('*'), runIds).order('id'));
+    case 'daily_hours': return fetchAll(() => { let q = inRuns(sb.from('v_daily').select('*'), runIds); if (from) q = q.gte('work_date', from); if (to) q = q.lte('work_date', to); return q.order('line_id').order('work_date'); });
+    case 'leave': return fetchAll(() => inRuns(sb.from('v_leave').select('*'), runIds).order('id'));
+    case 'project_status': return fetchAll(() => inRuns(sb.from('v_project_status').select('*'), runIds).order('project_key'));
+    case 'run_summary': return fetchAll(() => inRuns(sb.from('v_run_summary').select('*'), runIds).order('run_id'));
+    case 'timesheets': return fetchAll(() => inRuns(sb.from('timesheets').select('*'), runIds).order('id'));
+    case 'hr_cases': return loadCases();
+    case 'cover_assignments': { const [a, s] = await Promise.all([loadAssignments(), loadStaff()]); const m = new Map(s.map((e) => [e.id, e])); return a.map((x) => ({ ...x, cover_name: (m.get(x.cover_employee_id) || {}).full_name, cover_code: (m.get(x.cover_employee_id) || {}).employee_code, absent_code: (m.get(x.absent_employee_id) || {}).employee_code })); }
+    case 'cover_hours': { const [hh, s, a] = await Promise.all([loadCoverHours(from), loadStaff(), loadAssignments()]); const m = new Map(s.map((e) => [e.id, e])), am = new Map(a.map((x) => [x.id, x])); return hh.filter((x) => !to || String(x.work_date) <= to).map((x) => ({ ...x, cover_name: (m.get(x.cover_employee_id) || {}).full_name, cover_code: (m.get(x.cover_employee_id) || {}).employee_code, project_name: (m.get(x.cover_employee_id) || {}).default_project, covering_for: (am.get(x.assignment_id) || {}).absent_name || null, sent_to_payroll: !!x.synced_at })); }
+    case 'clock_shifts': return fetchAll(() => { let q = sb.from('v_clock_shifts').select('*'); if (from) q = q.gte('work_date', from); if (to) q = q.lte('work_date', to); return q.order('clock_in'); });
+    case 'projects': return loadProjects();
+    case 'email_log': return fetchAll(() => sb.from('email_log').select('kind,to_email,subject,status,error,created_at').order('created_at', { ascending: false }), 1000);
+    default: throw new Error('Unknown data source');
+  }
+}
+export const loadSavedReports = async () => ok(await sb.from('saved_reports').select('*').order('name'));
+export const saveReport = async (row) => (row.id ? ok(await sb.from('saved_reports').update({ name: row.name, definition: row.definition, shared: row.shared, updated_at: new Date().toISOString() }).eq('id', row.id).select().single()) : ok(await sb.from('saved_reports').insert({ name: row.name, definition: row.definition, shared: row.shared }).select().single()));
+export const deleteReport = async (id) => ok(await sb.from('saved_reports').delete().eq('id', id));
+
+// clock in / out (office side)
+export const loadShifts = async (from, to) => fetchAll(() => sb.from('v_clock_shifts').select('*').gte('work_date', from).lte('work_date', to).order('clock_in').order('in_id'));
+export const loadOpenClockIns = async () => fetchAll(() => sb.from('v_clock_shifts').select('*').is('clock_out', null).gte('clock_in', new Date(Date.now() - 18 * 3600000).toISOString()).order('clock_in').order('in_id'));
+export async function addClockShift({ employee_id, project_name, clock_in, clock_out, note }) {
+  const rows = [{ employee_id, kind: 'in', at: clock_in, project_name, note: note || null, source: 'manual' }];
+  if (clock_out) rows.push({ employee_id, kind: 'out', at: clock_out, project_name, note: note || null, source: 'manual' });
+  ok(await sb.from('clock_events').insert(rows));
+}
+export const updateClockEvent = async (id, patch) => ok(await sb.from('clock_events').update({ ...patch, source: 'manual' }).eq('id', id));
+export const deleteClockEvent = async (id) => ok(await sb.from('clock_events').delete().eq('id', id));
+export async function syncClockShifts(run, emp, shifts, payGroup) {
+  const byDate = new Map(); for (const s of shifts) byDate.set(ymd(s.work_date), (byDate.get(ymd(s.work_date)) || 0) + +s.hours);
+  const entry = { project: shifts[0].project_name || emp.default_project, site: emp.default_site || null, employee_name: emp.full_name, ni: emp.ni_number || null, rate: emp.default_rate, contract_type: emp.employment_type === 'permanent' ? 'Hourly' : 'Cover', pay_group: payGroup || emp.pay_group || null, budget_hours: emp.weekly_hours || 0, days: [...byDate].map(([date, hours]) => ({ date, hours: Math.round(hours * 100) / 100 })) };
+  const res = await commitEntries(run, [entry]);
+  for (const part of chunk(shifts.map((s) => s.in_id), 100)) ok(await sb.from('clock_events').update({ synced_run_id: run.id, synced_at: new Date().toISOString() }).in('id', part));
+  return res;
+}
+export const saveProjectLocation = async (id, patch) => ok(await sb.from('projects').update(patch).eq('id', id));
+export const addClockEvent = async (row) => ok(await sb.from('clock_events').insert(row));

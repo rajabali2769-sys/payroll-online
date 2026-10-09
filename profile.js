@@ -1,6 +1,7 @@
 // Employee profile: HR record (editable), HR cases with live warnings, and payroll history — all in one wide panel.
 import { loadStaffOne, updateStaff, loadCasesFor, loadEmployeeLines, loadProjects, onLive, loadAlOne, loadEmployeeLeave, loadAssignments, loadCoverHours, loadStaff } from './api.js';
-import { panel as mkPanel } from './panels.js';
+import { panel as mkPanel, expandAllBtn } from './panels.js';
+import { waButton } from './whatsapp.js';
 import { h, clear, toast, dmy, money, hrs, icon, initials, debounce, modal } from './ui.js';
 import { ctx } from './ctx.js';
 import { EMP_STATUS, EMP_TYPES, statusChip, typeChip, stageChip, sevChip, rtwChip, rtwState, daysTo, shiftText, weeklyPay, activeWarning, today, alCalc, isCover } from './hrkit.js';
@@ -60,7 +61,7 @@ export async function openProfile(empId, { onChange, tab: startTab } = {}) {
     const block = (title, id, ...kids) => mkPanel(title, h('div', null, ...kids), { id: 'prof.' + id, expand: false });
     const view = h('div', { class: 'pgrid3' }, dl, dg,
       block('Personal & contact', 'personal', h('div', { class: 'form-grid' }, fld('Employee ID', h('input', { type: 'text', value: e.employee_code || '', disabled: true, class: 'mono' })), inp('full_name', 'Full name'), inp('ni_number', 'NI number'), inp('email', 'Email', { type: 'email' }), inp('phone', 'Phone'), inp('job_title', 'Job title', { ph: 'Cleaning Operative' }))),
-      block('Project & pay', 'pay', h('div', { class: 'form-grid' }, selx('employment_type', 'Employment type', EMP_TYPES), inp('default_project', 'Project', { list: 'prof-proj' }), inp('pay_group', 'Pay date', { list: 'prof-grp', ph: '25th' }), inp('default_site', 'Site'), inp('default_rate', 'Hourly rate £', { type: 'number' }), inp('weekly_hours', 'Weekly budgeted hours', { type: 'number' }), inp('contracted_weeks', 'Contracted weeks / year', { type: 'number', ph: '52' })),
+      block('Project & pay', 'pay', h('div', { class: 'form-grid' }, selx('employment_type', 'Employment type', EMP_TYPES), inp('default_project', 'Project', { list: 'prof-proj' }), inp('pay_group', 'Pay date', { list: 'prof-grp', ph: '25th' }), inp('default_site', 'Site'), inp('area_manager', 'Area manager'), inp('area_manager_email', 'Area manager email', { type: 'email' }), inp('default_rate', 'Hourly rate £', { type: 'number' }), inp('weekly_hours', 'Weekly budgeted hours', { type: 'number' }), inp('contracted_weeks', 'Contracted weeks / year', { type: 'number', ph: '52' })),
         h('div', { class: 'wpay' }, 'Weekly pay ', wp, h('span', { class: 'small muted' }, ' = weekly hours × hourly rate'))),
       block('Shift, right to work & dates', 'dates', h('div', { class: 'form-grid' }, inp('shift_days', 'Shift days', { ph: 'Mon–Fri' }), h('div', { class: 'row s2', style: { gap: '8px' } }, inp('shift_start', 'Start', { type: 'time' }), inp('shift_end', 'Finish', { type: 'time' })), inp('rtw_type', 'RTW document', { ph: 'Passport / Share code / BRP' }), inp('rtw_expiry', 'RTW expiry date', { type: 'date' }), inp('hire_date', 'Hire date', { type: 'date' }),
         fld('Termination date', h('input', { type: 'date', value: e.termination_date || '', disabled: true })), fld('Termination reason', h('input', { type: 'text', value: e.termination_reason || '', disabled: true }), 's2'))),
@@ -69,7 +70,7 @@ export async function openProfile(empId, { onChange, tab: startTab } = {}) {
     f.weekly_hours.addEventListener('input', recalc); f.default_rate.addEventListener('input', recalc);
     return h('div', null, view, canHR ? h('div', { class: 'savebar' }, h('span', { class: 'small muted' }, e.added_by_email ? `Added by ${e.added_by_email}${e.created_at ? ' on ' + dmy(e.created_at) : ''}` : ''), h('div', { class: 'grow' }), h('button', { class: 'btn primary', onClick: () => {
       const p = {}; const nums = ['default_rate', 'weekly_hours', 'contracted_weeks', 'al_entitlement', 'al_carry', 'al_taken_before'];
-      for (const [k, el] of Object.entries(f)) { const v = el.value.trim(); p[k] = v === '' ? (['al_entitlement'].includes(k) ? 20 : ['al_carry', 'al_taken_before'].includes(k) ? 0 : null) : nums.includes(k) ? +v : k === 'ni_number' ? v.toUpperCase().replace(/\s+/g, '') : k === 'email' ? v.toLowerCase() : v; }
+      for (const [k, el] of Object.entries(f)) { const v = el.value.trim(); p[k] = v === '' ? (['al_entitlement'].includes(k) ? 20 : ['al_carry', 'al_taken_before'].includes(k) ? 0 : null) : nums.includes(k) ? +v : k === 'ni_number' ? v.toUpperCase().replace(/\s+/g, '') : k === 'email' || k === 'area_manager_email' ? v.toLowerCase() : v; }
       if (!p.full_name) return toast('Name is required', 'err');
       patch(p, 'Profile saved');
     } }, 'Save changes')) : null);
@@ -145,16 +146,16 @@ export async function openProfile(empId, { onChange, tab: startTab } = {}) {
         h('div', { class: 'avatar big' }, initials(e.full_name)),
         h('div', { class: 'grow' }, h('div', { class: 'eyebrow', style: { color: 'rgba(255,255,255,.85)' } }, e.employee_code || ''), h('h2', null, e.full_name), h('div', { class: 'row wrap', style: { gap: '6px', marginTop: '4px' } }, statusChip(e.emp_status), typeChip(e.employment_type), e.default_project ? h('span', { class: 'hpill grp' }, e.default_project) : null, e.payroll_state === 'pending' ? h('span', { class: 'hpill r-d30' }, 'Waiting for payroll') : null, w ? h('span', { class: 'hpill v-high' }, `${w.warning_level} until ${dmy(w.warning_expiry)}`) : null),
           h('div', { class: 'small muted', style: { marginTop: '4px' } }, [e.job_title, e.email, e.phone].filter(Boolean).join(' · '))),
-        canHR ? h('div', { class: 'row wrap', style: { gap: '6px' } },
+        h('div', { class: 'row wrap', style: { gap: '6px' } }, waButton(e, { label: 'WhatsApp' }), canHR ? [
           e.emp_status !== 'active' ? h('button', { class: 'btn sm', onClick: () => statusModal('active') }, 'Make active') : null,
           e.emp_status === 'active' ? h('button', { class: 'btn sm', onClick: () => statusModal('suspended') }, 'Suspend') : null,
-          e.emp_status !== 'terminated' ? h('button', { class: 'btn sm danger', onClick: () => statusModal('terminated') }, 'Terminate') : null) : null,
+          e.emp_status !== 'terminated' ? h('button', { class: 'btn sm danger', onClick: () => statusModal('terminated') }, 'Terminate') : null] : null),
         h('button', { class: 'btn sm', onClick: close }, icon('x'))),
-      h('div', { class: 'pstats' }, stat('Pay date', e.pay_group || '—'), stat('Hourly rate', e.default_rate != null ? money(e.default_rate) : '—'), stat('Weekly hours', e.weekly_hours != null ? hrs(e.weekly_hours) : '—'), stat('Weekly pay', money(weeklyPay(e)) || '—'),
+      h('div', { class: 'pstats' }, stat('Pay date', e.pay_group || '—'), stat('Area manager', e.area_manager || '—'), stat('Hourly rate', e.default_rate != null ? money(e.default_rate) : '—'), stat('Weekly hours', e.weekly_hours != null ? hrs(e.weekly_hours) : '—'), stat('Weekly pay', money(weeklyPay(e)) || '—'),
         stat('Shift', shiftText(e) || '—'), stat('Hire date', dmy(e.hire_date) || '—'), stat('AL accrued', (Math.round(alCalc(e).accrued * 10) / 10) + ' d'),
         stat('RTW expiry', e.rtw_expiry ? `${dmy(e.rtw_expiry)}${dleft < 0 ? ' (expired)' : dleft <= 90 ? ` (${dleft}d)` : ''}` : '—', 'r-' + rs),
         canSeeCases ? stat('Open HR cases', String(open), open ? 'r-d30' : '') : null, e.emp_status === 'terminated' ? stat('Terminated', dmy(e.termination_date), 'r-expired') : e.emp_status === 'suspended' ? stat('Suspended from', dmy(e.suspended_from), 'r-d30') : null),
-      h('div', { class: 'tabs' }, tabs.map(([k, t]) => h('button', { class: tab === k ? 'on' : '', onClick: () => { tab = k; draw(); } }, t))),
+      h('div', { class: 'tabs row' }, tabs.map(([k, t]) => h('button', { class: tab === k ? 'on' : '', onClick: () => { tab = k; draw(); } }, t)), h('div', { class: 'grow' }), expandAllBtn(() => panel)),
       body);
   }
 

@@ -6,7 +6,7 @@ import { h, clear, money, hrs, dmy, dm } from './ui.js';
 
 const root = document.getElementById('app');
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
-const S = { tab: 'week', weekOffset: 0, profile: null, days: [], periods: [], slips: [], brand: {}, offline: false, deferred: null };
+const S = { tab: 'clock', clock: [], clockProjects: [], busy: false, weekOffset: 0, profile: null, days: [], periods: [], slips: [], brand: {}, offline: false, deferred: null };
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const iso = (d) => d.toISOString().slice(0, 10);
 const mondayOf = (d) => { const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x; };
@@ -31,7 +31,7 @@ function authScreen(note) {
       if (mode === 'in') { const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value }); if (error) throw error; await boot(); }
       else { const { data, error } = await sb.auth.signUp({ email: email.value.trim(), password: pw.value, options: { emailRedirectTo: location.href.split('#')[0] } }); if (error) throw error; if (data.session) await boot(); else show('Almost there — we have emailed you a link. Open it to confirm your email, then sign in here.'); }
     } catch (er) { show(er.message || String(er), true); } finally { btn.disabled = false; }
-  } }, title, h('div', { class: 'muted small' }, 'See your hours, earnings, leave and payslips. Use the same email your employer has on file for you.'), note ? h('div', { class: 'notice', style: { marginTop: '12px' } }, note) : null, h('label', null, 'Email'), email, h('label', null, 'Password'), pw, h('div', { style: { marginTop: '14px' } }, btn), msg, toggle, forgot);
+  } }, title, h('div', { class: 'muted small' }, 'Clock in and out, and see your hours, earnings, leave and payslips. Use the same email your employer has on file for you.'), note ? h('div', { class: 'notice', style: { marginTop: '12px' } }, note) : null, h('label', null, 'Email'), email, h('label', null, 'Password'), pw, h('div', { style: { marginTop: '14px' } }, btn), msg, toggle, forgot);
   clear(root).append(h('div', { class: 'auth' }, h('div', { class: 'box' }, form)));
 }
 
@@ -39,8 +39,8 @@ function authScreen(note) {
 async function load() {
   const rpc = async (name, args) => { const { data, error } = await sb.rpc(name, args || {}); if (error) throw error; return data || []; };
   try {
-    const [prof, days, periods, slips, brand, lv, lvDays] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {}), rpc('my_leave').catch(() => []), rpc('my_leave_days').catch(() => [])]);
-    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, leave: lv[0] || null, leaveDays: lvDays, offline: false });
+    const [prof, days, periods, slips, brand, lv, lvDays, clk, clkP] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {}), rpc('my_leave').catch(() => []), rpc('my_leave_days').catch(() => []), rpc('my_clock', { p_days: 14 }).catch(() => []), rpc('my_clock_projects').catch(() => [])]);
+    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, leave: lv[0] || null, leaveDays: lvDays, clock: clk, clockProjects: clkP, offline: false });
     try { localStorage.setItem(cacheKey('data'), JSON.stringify({ profile: S.profile, days, periods, slips, brand, leave: S.leave, leaveDays: lvDays, at: Date.now() })); } catch { /* private mode */ }
   } catch (e) {
     const c = (() => { try { return JSON.parse(localStorage.getItem(cacheKey('data'))); } catch { return null; } })();
@@ -76,6 +76,51 @@ function periodsView() {
       h('div', { class: 'big', style: { margin: '8px 0 2px' } }, money(p.gross)), h('div', { class: 'small muted' }, 'gross pay before tax and deductions'),
       h('div', { class: 'row small', style: { marginTop: '10px', gap: '18px' } }, h('div', null, h('b', null, hrs(p.hours)), ' hours'), p.leave ? h('div', null, h('b', null, hrs(p.leave)), ' paid leave h') : null, p.ssp ? h('div', null, h('b', null, money(p.ssp)), ' SSP') : null)); });
 }
+// ---------------- clock in / out ----------------
+const tm = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+function pairShifts(evs) {
+  const asc = evs.slice().sort((a, b) => String(a.at).localeCompare(String(b.at))), out = [];
+  for (let i = 0; i < asc.length; i++) { const e = asc[i]; if (e.kind !== 'in') continue; const n = asc[i + 1]; const o = n && n.kind === 'out' && Date.parse(n.at) - Date.parse(e.at) <= 18 * 3600000 ? n : null; out.push({ in: e, out: o, hours: o ? (Date.parse(o.at) - Date.parse(e.at)) / 3600000 : null }); if (o) i++; }
+  return out.reverse();
+}
+let tick = null;
+function clockView() {
+  const last = S.clock[0], isIn = last && last.kind === 'in' && Date.now() - Date.parse(last.at) < 16 * 3600000;
+  const projSel = h('select', { style: { width: '100%', padding: '12px', border: '1px solid var(--line)', borderRadius: '10px', font: 'inherit', background: '#fff' } }, (S.clockProjects.length ? S.clockProjects : [{ name: '', is_default: true }]).map((p) => h('option', { value: p.name || '' }, p.name || 'My site')));
+  const note = h('input', { type: 'text', placeholder: 'Note (optional)' });
+  const msg = h('div', { class: 'notice hidden' });
+  const timer = h('div', { class: 'big', style: { fontSize: '40px', textAlign: 'center' } });
+  if (tick) clearInterval(tick);
+  if (isIn) { const upd = () => { const m = Math.floor((Date.now() - Date.parse(last.at)) / 60000); timer.textContent = `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`; }; upd(); tick = setInterval(upd, 30000); }
+  const punch = async (kind, btn) => {
+    if (S.busy) return; S.busy = true; btn.disabled = true; btn.textContent = 'Getting your location…'; msg.className = 'notice hidden';
+    const pos = await new Promise((res) => { if (!navigator.geolocation) return res(null); navigator.geolocation.getCurrentPosition((p) => res(p.coords), () => res(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }); });
+    btn.textContent = 'Saving…';
+    try {
+      const { data, error } = await sb.rpc('clock_punch', { p_kind: kind, p_project: projSel.value || null, p_lat: pos ? pos.latitude : null, p_lng: pos ? pos.longitude : null, p_accuracy: pos ? pos.accuracy : null, p_note: note.value.trim() || null });
+      if (error) throw error;
+      const ev = Array.isArray(data) ? data[0] : data;
+      S.clock = (await sb.rpc('my_clock', { p_days: 14 })).data || S.clock;
+      if (navigator.vibrate) navigator.vibrate(60);
+      draw();
+      const m2 = document.querySelector('#clockmsg'); if (m2) { m2.textContent = `${kind === 'in' ? 'Clocked in' : 'Clocked out'} at ${tm(ev.at)}${ev.in_area === false ? ' — note: you seem to be away from the site' : ''}${!pos ? ' (location not shared)' : ''}`; m2.className = 'notice ' + (ev.in_area === false ? '' : 'ok'); }
+    } catch (e) { msg.textContent = e.message || String(e); msg.className = 'notice err'; btn.disabled = false; btn.textContent = kind === 'in' ? 'Clock in' : 'Clock out'; }
+    finally { S.busy = false; }
+  };
+  const btn = h('button', { class: 'btn', style: { padding: '20px', fontSize: '19px', background: isIn ? 'linear-gradient(135deg,#e11d48,#f97316)' : 'linear-gradient(135deg,#059669,#14b8a6)' }, onClick: (e) => punch(isIn ? 'out' : 'in', e.currentTarget) }, isIn ? 'Clock out' : 'Clock in');
+  const shifts = pairShifts(S.clock), wk = mondayOf(new Date()).getTime();
+  const weekH = shifts.filter((x) => x.hours && Date.parse(x.in.at) >= wk).reduce((s, x) => s + x.hours, 0);
+  return [h('div', { class: 'card', style: { textAlign: 'center' } },
+      h('div', { class: 'small muted' }, new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })),
+      isIn ? [h('div', { style: { margin: '8px 0 2px', fontWeight: 700, color: '#047857' } }, `You are clocked in at ${last.project_name || 'your site'} since ${tm(last.at)}`), timer] : h('div', { style: { margin: '10px 0', fontWeight: 700 } }, 'You are not clocked in'),
+      h('div', { id: 'clockmsg', class: 'notice hidden' }), msg,
+      !isIn ? h('div', { style: { textAlign: 'left' } }, h('label', null, 'Where are you working?'), projSel) : null,
+      h('div', { style: { textAlign: 'left' } }, h('label', null, 'Note'), note),
+      h('div', { style: { marginTop: '14px' } }, btn),
+      h('div', { class: 'small muted', style: { marginTop: '10px' } }, 'Your phone may ask to share your location — this lets your manager see you clocked in on site. The time comes from our system.')),
+    h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', { class: 'grow' }, 'Your recent shifts'), h('span', { class: 'pill' }, `This week ${hrs(weekH)} h`)),
+      shifts.length ? shifts.slice(0, 20).map((x) => h('div', { class: 'day' }, h('div', { class: 'd' }, h('b', null, String(new Date(x.in.at).getDate())), h('span', null, DOW[(new Date(x.in.at).getDay() + 6) % 7])), h('div', { class: 'grow' }, h('b', null, `${tm(x.in.at)} – ${x.out ? tm(x.out.at) : 'still in'}`), h('div', { class: 'small muted' }, x.in.project_name || '')), h('div', { class: 'right' }, x.hours != null ? h('b', null, hrs(x.hours) + ' h') : h('span', { class: 'pill est' }, 'open')))) : h('div', { class: 'muted small', style: { marginTop: '8px' } }, 'No clock-ins yet.'))];
+}
 function leaveView() {
   const L = S.leave, r = (n) => String(Math.round(num(n) * 100) / 100);
   if (!L) return h('div', { class: 'card muted' }, 'Your leave record is not available yet. Please ask HR.');
@@ -100,8 +145,8 @@ function slipsView() {
 function draw() {
   const B = S.brand || {}, name = B.app_name || 'Payroll Online';
   const body = !S.profile ? h('div', { class: 'card' }, h('h3', { style: { marginTop: 0 } }, 'We cannot find your details yet'), h('p', { class: 'muted' }, 'Your sign-in email has to match the email your employer holds for you. Please ask the payroll team to add it, then open this app again.'))
-    : S.tab === 'week' ? weekView() : S.tab === 'periods' ? periodsView() : S.tab === 'leave' ? leaveView() : slipsView();
-  const tabs = [['week', '📅', 'Hours'], ['periods', '💷', 'Earnings'], ['leave', '🌴', 'Leave'], ['slips', '🧾', 'Payslips']];
+    : S.tab === 'clock' ? clockView() : S.tab === 'week' ? weekView() : S.tab === 'periods' ? periodsView() : S.tab === 'leave' ? leaveView() : slipsView();
+  const tabs = [['clock', '⏱️', 'Clock'], ['week', '📅', 'Hours'], ['periods', '💷', 'Earnings'], ['leave', '🌴', 'Leave'], ['slips', '🧾', 'Payslips']];
   clear(root).append(
     h('div', { class: 'top noprint' }, h('div', { class: 'row' }, h('div', { class: 'grow' }, h('h1', null, `Hi ${firstName()} 👋`), h('div', { class: 'sub' }, `${name}${B.company ? ' · ' + B.company : ''}`)), h('button', { class: 'btn sm ghost', style: { background: 'rgba(255,255,255,.2)', color: '#fff' }, onClick: async () => { await sb.auth.signOut(); localStorage.removeItem(cacheKey('data')); authScreen(); } }, 'Sign out'))),
     h('div', { class: 'wrap' }, S.offline ? h('div', { class: 'notice' }, 'You are offline — showing the last information saved on this phone.') : null,

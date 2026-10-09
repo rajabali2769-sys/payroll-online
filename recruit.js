@@ -4,9 +4,10 @@ import { loadStaff, addStaff, updateStaff, loadProjects, loadPeriods, moveToPayr
 import { h, clear, toast, modal, dmy, dm, money, hrs, icon, debounce, initials, ago, addDays, mondayOf, DOW, confirmBox, natCompare } from './ui.js';
 import { ctx, openRuns, currentRuns, runLabel } from './ctx.js';
 import { typeChip, rtwChip, rtwState, shiftText, weeklyPay, today, isCover, COVER_REASONS, empLabel } from './hrkit.js';
-import { panel, panelGrid } from './panels.js';
+import { panel, panelGrid, expandAllBtn } from './panels.js';
 import { importModal, exportRows } from './importer.js';
 import { coverStarterSpec, assignmentSpec, hoursSpec, finder } from './specs.js';
+import { waButton } from './whatsapp.js';
 
 const fld = (label, el, cls) => h('label', { class: 'fld' + (cls ? ' ' + cls : '') }, label, el);
 const TABS = [['queue', 'New starters'], ['add', 'Add a cover'], ['assign', 'Who is covering whom'], ['hours', 'Cover hours']];
@@ -14,13 +15,13 @@ const TABS = [['queue', 'New starters'], ['add', 'Add a cover'], ['assign', 'Who
 export async function render(root, params) {
   const canAdd = ctx.can('recruit_add'), canMove = ctx.can('move_to_payroll') && ctx.canEdit;
   let staff = [], projects = [], assigns = [], hoursRows = [], tab = (params && params.tab) || 'queue', q = '', qtab = 'pending', week = mondayOf(today()), editing = null;
-  const bar = h('div', { class: 'tabs big' }), host = h('div', { class: 'ns-host' });
+  const bar = h('div', { class: 'tabs big row' }), host = h('div', { class: 'ns-host' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'New starters & covers'), h('p', null, canMove ? 'Recruitment adds covers, who they replace and their hours. Check them, add new starters to the payroll and send cover hours across.' : 'Add temporary / cover staff, say who they are covering, and record their hours. The payroll team sees everything straight away.'))),
     bar, host);
   const byId = () => new Map(staff.map((e) => [e.id, e]));
   const groups = () => [...new Set([...projects.map((p) => p.pay_group), ...staff.map((e) => e.pay_group)].filter(Boolean))].sort(natCompare);
-  const showTabs = () => clear(bar).append(TABS.filter(([k]) => k !== 'add' || canAdd).map(([k, t]) => h('button', { class: tab === k ? 'on' : '', onClick: () => { tab = k; q = ''; draw(); } }, t,
-    k === 'queue' ? h('span', { class: 'cnt' }, String(staff.filter((e) => e.payroll_state === 'pending').length)) : k === 'hours' ? h('span', { class: 'cnt', title: 'days not yet in a payroll' }, String(hoursRows.filter((x) => !x.synced_at).length)) : null)));
+  const showTabs = () => clear(bar).append(h('span'), TABS.filter(([k]) => k !== 'add' || canAdd).map(([k, t]) => h('button', { class: tab === k ? 'on' : '', onClick: () => { tab = k; q = ''; draw(); } }, t,
+    k === 'queue' ? h('span', { class: 'cnt' }, String(staff.filter((e) => e.payroll_state === 'pending').length)) : k === 'hours' ? h('span', { class: 'cnt', title: 'days not yet in a payroll' }, String(hoursRows.filter((x) => !x.synced_at).length)) : null)), h('div', { class: 'grow' }), expandAllBtn(() => host));
 
   // ---------------- 1. queue ----------------
   function queueTab() {
@@ -31,7 +32,7 @@ export async function render(root, params) {
     const map = byId();
     const card = (e) => { const cov = assigns.filter((a) => a.cover_employee_id === e.id);
       return h('div', { class: 'nscard' + (e.payroll_state === 'pending' ? ' pending' : '') },
-        h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'avatar sm' }, initials(e.full_name)), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), typeChip(e.employment_type)),
+        h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'avatar sm' }, initials(e.full_name)), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), waButton(e), typeChip(e.employment_type)),
         h('div', { class: 'nsfacts' }, [['£/h', e.default_rate != null ? money(e.default_rate) : '—'], ['Pay date', e.pay_group || '—'], ['Weekly hrs', e.weekly_hours != null ? hrs(e.weekly_hours) : '—'], ['Weekly pay', money(weeklyPay(e))], ['Starts', dmy(e.hire_date) || '—'], ['Shift', shiftText(e) || '—']].map(([l, v]) => h('div', null, h('span', null, l), h('b', null, String(v))))),
         cov.length ? h('div', { class: 'small covfor' }, h('b', null, 'Covering for: '), cov.map((a) => `${(map.get(a.absent_employee_id) || {}).full_name || a.absent_name || '—'} (${a.reason.toLowerCase()})`).join(', ')) : isCover(e) ? h('div', { class: 'small muted' }, 'Not linked to anyone yet.') : null,
         h('div', { class: 'row small', style: { gap: '6px' } }, h('span', { class: 'muted' }, 'RTW'), rtwChip(e.rtw_expiry), h('div', { class: 'grow' }), h('span', { class: 'muted', title: e.added_by_email || '' }, e.payroll_added_at ? `Added to payroll ${ago(e.payroll_added_at)}` : `Sent ${ago(e.created_at)}${e.added_by_email ? ' by ' + e.added_by_email.split('@')[0] : ''}`)),
@@ -99,9 +100,9 @@ export async function render(root, params) {
     if (!editing) addRow();
     const existing = h('input', { type: 'text', list: 'ns-covers', placeholder: 'Find the cover by ID or name' });
     const details = panelGrid(3,
-      panel('Cover details', h('div', { class: 'form-grid' }, inp('full_name', 'Full name *', { cls: 's2' }), inp('ni_number', 'NI number'), inp('phone', 'Phone'), inp('email', 'Email', { type: 'email', cls: 's2' })), { id: 'ns.p1', expand: false }),
-      panel('Project, pay & hours', h('div', { class: 'form-grid' }, inp('default_project', 'Project *', { list: 'ns-proj', cls: 's2' }), inp('pay_group', 'Pay date', { list: 'ns-grp', ph: '25th' }), inp('default_rate', 'Hourly rate £ *', { type: 'number' }), inp('weekly_hours', 'Expected hours a week', { type: 'number' }), inp('contracted_weeks', 'Weeks needed', { type: 'number', ph: 'e.g. 4' })), { id: 'ns.p2', expand: false }),
-      panel('Shift, start & right to work', h('div', { class: 'form-grid' }, inp('shift_days', 'Shift days', { ph: 'Mon–Fri' }), h('div', { class: 'row s2', style: { gap: '8px' } }, inp('shift_start', 'Start', { type: 'time' }), inp('shift_end', 'Finish', { type: 'time' })), inp('hire_date', 'Start date *', { type: 'date', value: today() }), inp('default_site', 'Site'), inp('rtw_type', 'RTW document', { ph: 'Passport / Share code' }), inp('rtw_expiry', 'RTW expiry', { type: 'date' })), { id: 'ns.p3', expand: false }));
+      panel('Cover details', h('div', { class: 'form-grid' }, inp('full_name', 'Full name *', { cls: 's2' }), inp('ni_number', 'NI number'), inp('phone', 'Phone'), inp('email', 'Email', { type: 'email', cls: 's2' })), { id: 'ns.p1', expand: false, open: true }),
+      panel('Project, pay & hours', h('div', { class: 'form-grid' }, inp('default_project', 'Project *', { list: 'ns-proj', cls: 's2' }), inp('pay_group', 'Pay date', { list: 'ns-grp', ph: '25th' }), inp('default_rate', 'Hourly rate £ *', { type: 'number' }), inp('weekly_hours', 'Expected hours a week', { type: 'number' }), inp('contracted_weeks', 'Weeks needed', { type: 'number', ph: 'e.g. 4' })), { id: 'ns.p2', expand: false, open: true }),
+      panel('Shift, start & right to work', h('div', { class: 'form-grid' }, inp('shift_days', 'Shift days', { ph: 'Mon–Fri' }), h('div', { class: 'row s2', style: { gap: '8px' } }, inp('shift_start', 'Start', { type: 'time' }), inp('shift_end', 'Finish', { type: 'time' })), inp('hire_date', 'Start date *', { type: 'date', value: today() }), inp('default_site', 'Site'), inp('rtw_type', 'RTW document', { ph: 'Passport / Share code' }), inp('rtw_expiry', 'RTW expiry', { type: 'date' })), { id: 'ns.p3', expand: false, open: true }));
     const exBox = h('div', { class: 'card pad hidden', style: { marginBottom: '12px' } }, fld('Existing cover', existing), h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Use this when the same cover is now covering somebody else as well — only the lines below are added.'));
     f.default_project.addEventListener('change', () => { const p = projects.find((x) => x.name === f.default_project.value); if (p && p.pay_group && !f.pay_group.value) f.pay_group.value = p.pay_group; });
     const segBtn = (k, t) => h('button', { class: mode === k ? 'on' : '', onClick: (ev) => { mode = k; ev.currentTarget.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === ev.currentTarget)); details.classList.toggle('hidden', k !== 'new'); exBox.classList.toggle('hidden', k !== 'old'); } }, t);
@@ -110,7 +111,7 @@ export async function render(root, params) {
         h('div', { class: 'seg big', style: { marginBottom: '10px' } }, segBtn('new', 'New cover'), segBtn('old', 'Existing cover — add more people they cover')),
       details, exBox,
       editing ? null : panel('Covering for', h('div', null, h('div', { class: 'cfrow head' }, ['Employee being covered', 'Reason', 'From', 'To', 'Exp. h/wk', 'Notes', '', ''].map((t) => h('span', null, t))), rowsHost,
-        h('button', { class: 'btn sm', style: { marginTop: '8px' }, onClick: () => addRow() }, icon('plus'), 'Add another employee')), { id: 'ns.cf', sub: ' — one cover can replace several people: add a line for each (⧉ copies a line)' }),
+        h('button', { class: 'btn sm', style: { marginTop: '8px' }, onClick: () => addRow() }, icon('plus'), 'Add another employee')), { id: 'ns.cf', open: true, sub: ' — one cover can replace several people: add a line for each (⧉ copies a line)' }),
       err,
       h('div', { class: 'savebar' }, h('span', { class: 'small muted' }, 'A unique Employee ID is created automatically. The payroll team is told straight away.'), h('div', { class: 'grow' }),
         h('button', { class: 'btn primary', onClick: async (ev) => {

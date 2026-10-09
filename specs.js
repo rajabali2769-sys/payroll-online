@@ -13,6 +13,8 @@ export const EMPLOYEE_COLUMNS = [
   { key: 'default_project', label: 'Project', required: true, example: 'NHS Cornwall' },
   { key: 'pay_group', label: 'Pay date', example: '25th', help: 'Pay date group, e.g. 24th, 25th, 26th, 28th, 29th, LWD, 5th', aliases: ['pay group', 'paydate'] },
   { key: 'default_site', label: 'Site' },
+  { key: 'area_manager', label: 'Area manager', help: 'Leave empty to use the project POC' },
+  { key: 'area_manager_email', label: 'Area manager email', type: 'lower' },
   { key: 'default_rate', label: 'Hourly rate', type: 'number', example: 12.21, aliases: ['rate', 'hourly rate £', 'rate per hour'] },
   { key: 'weekly_hours', label: 'Weekly budgeted hours', type: 'number', example: 15, aliases: ['weekly hours', 'budgeted hours', 'contracted hours'] },
   { key: 'contracted_weeks', label: 'Contracted weeks', type: 'number', example: 52 },

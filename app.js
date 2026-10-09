@@ -6,21 +6,22 @@ const PAGES = {
   dashboard:  { title: 'Dashboard',       icon: 'home',   group: 'Overview', perm: 'page:dashboard',  load: () => import('./dashboard.js') },
   payrolls:   { title: 'All payrolls',    icon: 'grid',   group: 'Overview', perm: 'page:payrolls',   load: () => import('./payrolls.js') },
   payroll:    { title: 'Payroll',         icon: 'table',  group: 'Payroll',  perm: 'page:payroll',    load: () => import('./payroll.js') },
+  clock:      { title: 'Clock in / out',  icon: 'clock',  group: 'Payroll',  perm: 'page:clock',      load: () => import('./clock.js') },
   attendance: { title: 'Daily attendance', icon: 'clock',  group: 'Payroll',  perm: 'page:attendance', load: () => import('./attendance.js') },
   timesheets: { title: 'Timesheets',      icon: 'file',   group: 'Payroll',  perm: 'page:timesheets', load: () => import('./timesheets.js') },
   chase:      { title: 'Chase timesheets', icon: 'mail',  group: 'Payroll',  perm: 'page:chase',      load: () => import('./chase.js') },
   adhoc:      { title: 'Ad-hoc & billing', icon: 'pound', group: 'Payroll',  perm: 'page:adhoc',      load: () => import('./adhoc.js') },
   leave:      { title: 'Leave & SSP',     icon: 'sun',    group: 'Payroll',  perm: 'page:leave',      load: () => import('./leave.js') },
   explorer:   { title: 'Hours explorer',  icon: 'search', group: 'Reports',  perm: 'page:explorer',   load: () => import('./explorer.js') },
-  journal:    { title: 'Manual journal',  icon: 'book',   group: 'Reports',  perm: 'page:journal',    load: () => import('./journal.js') },
   payslips:   { title: 'Payslips',        icon: 'pound',  group: 'Reports',  perm: 'page:payslips',   load: () => import('./payslips.js') },
+  journal:    { title: 'Manual journal',  icon: 'book',   group: 'Reports',  perm: 'page:journal',    load: () => import('./journal.js') },
+  reports:    { title: 'Custom reports',  icon: 'trend',  group: 'Reports',  perm: 'page:reports',    load: () => import('./reports.js') },
   staff:      { title: 'Employees',       icon: 'users',  group: 'HR',       perm: 'page:staff',      load: () => import('./staff.js') },
   hrcases:    { title: 'HR cases',        icon: 'alert',  group: 'HR',       perm: 'page:hrcases',    load: () => import('./hrcases.js') },
   recruit:    { title: 'New starters & covers',    icon: 'plus',   group: 'HR',       perm: 'page:recruit',    load: () => import('./recruit.js') },
   hours:      { title: 'Upload hours',    icon: 'upload', group: 'Setup',    perm: 'page:hours',      load: () => import('./hours.js') },
   import:     { title: 'Import Excel',    icon: 'upload', group: 'Setup',    perm: 'page:import',     load: () => import('./imports.js') },
   calendar:   { title: 'Pay calendar',    icon: 'cal',    group: 'Setup',    perm: 'page:calendar',   load: () => import('./calendar.js') },
-  people:     { title: 'Active employees', icon: 'users', group: 'Setup',    perm: 'page:people',     load: () => import('./people.js') },
   budgets:    { title: 'Budgets',         icon: 'grid',   group: 'Setup',    perm: 'page:budgets',    load: () => import('./budgets.js') },
   projects:   { title: 'Projects & POCs', icon: 'folder', group: 'Setup',    perm: 'page:projects',   load: () => import('./projects.js') },
   settings:   { title: 'Customise & settings', icon: 'gear', group: 'Setup', perm: 'page:settings',   load: () => import('./settings.js') },
@@ -72,6 +73,7 @@ function setPasswordScreen() {
 const parseHash = () => {
   const raw = location.hash.startsWith('#/') ? location.hash.slice(2) : 'dashboard';
   const [path, qs] = raw.split('?');
+  if (path === 'people') return { page: 'staff', params: {} };
   return { page: PAGES[path] ? path : 'dashboard', params: Object.fromEntries(new URLSearchParams(qs || '')) };
 };
 export const go = (page, params) => { location.hash = '#/' + page + (params ? '?' + new URLSearchParams(params) : ''); };
@@ -85,7 +87,7 @@ async function route() {
     if (first && first[0] !== page) { go(first[0]); return; }
     clear(mainEl).append(h('div', { class: 'card empty' }, h('h2', { style: { color: '#14222b' } }, 'No access to this page'), h('p', null, 'Ask the system owner to give your role access.'))); return;
   }
-  document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === page));
+  document.querySelectorAll('.nav a').forEach((a) => { a.classList.toggle('active', a.dataset.page === page); if (a.dataset.page === page) { const g = a.closest('.navgrp'); if (g) g.classList.remove('closed'); } });
   if (cleanup) { try { cleanup(); } catch { /* ignore */ } cleanup = null; }
   clear(mainEl).append(h('div', { class: 'empty' }, 'Loading…'));
   try {
@@ -114,13 +116,19 @@ export const refreshCurrentBox = paintCurrent;
 function shell() {
   liveEl = h('span', { class: 'live' }, h('i'), h('span', null, 'Connecting…'));
   mainEl = h('main', { class: 'main' });
-  const navItems = []; let lastGroup = null;
+  // menu groups fold open / closed (click the group name); the group of the page you are on always opens
+  const navItems = []; const groups = new Map();
+  const navOpen = (g) => { try { const v = localStorage.getItem('nav.' + g); return v === null ? g === 'Overview' : v === '1'; } catch { return true; } };
   for (const [k, d] of Object.entries(PAGES)) {
     if (!ctx.can(d.perm)) continue;
-    if (d.group !== lastGroup) { navItems.push(h('div', { class: 'grp' }, d.group)); lastGroup = d.group; }
-    navItems.push(h('a', { href: '#/' + k, 'data-page': k }, icon(d.icon), d.title, k === 'recruit' ? h('span', { class: 'navbadge hidden' }) : null));
+    if (!groups.has(d.group)) {
+      const box = h('div', { class: 'navgrp' + (navOpen(d.group) ? '' : ' closed'), 'data-group': d.group });
+      const head = h('button', { class: 'grp', onClick: () => { box.classList.toggle('closed'); try { localStorage.setItem('nav.' + d.group, box.classList.contains('closed') ? '0' : '1'); } catch { /* private mode */ } } }, h('span', { class: 'grow' }, d.group), h('span', { class: 'gchev' }, '▾'));
+      groups.set(d.group, h('div', { class: 'navlinks' })); box.append(head, groups.get(d.group)); navItems.push(box);
+    }
+    groups.get(d.group).append(h('a', { href: '#/' + k, 'data-page': k }, icon(d.icon), d.title, k === 'recruit' ? h('span', { class: 'navbadge hidden' }) : null));
   }
-  const canFind = ctx.can('page:staff') || ctx.can('page:recruit') || ctx.can('page:people');
+  const canFind = ctx.can('page:staff') || ctx.can('page:recruit');
   const finder = canFind ? h('button', { class: 'navsearch', onClick: () => import('./search.js').then((m) => m.quickSearch()) }, icon('search'), h('span', { class: 'grow' }, 'Find employee'), h('kbd', null, 'Ctrl K')) : null;
   if (canFind && !window.__qsBound) { window.__qsBound = true; document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (!document.querySelector('.modal-wrap')) import('./search.js').then((m) => m.quickSearch()); } }); }
   const nav = h('nav', { class: 'nav' }, finder, navItems);

@@ -21,7 +21,7 @@ export async function render(root, params) {
   const filterBar = h('div', { class: 'toolbar' });
   root.append(
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Payroll'), h('p', null, ctx.canEdit ? 'Click any highlighted cell to edit. Everyone sees the change straight away.' : 'Read-only view.')),
-      h('div', { class: 'row' }, runPicker(() => { const prev = cleanup; prev && prev(); clear(root); render(root, {}).then((c) => { cleanup = c; }); }))),
+      h('div', { class: 'row' }, ctx.can('page:payslips') ? h('a', { class: 'btn', href: '#/payslips', title: 'Publish and email payslips for this payroll' }, icon('mail'), 'Send payslips') : null, runPicker(() => { const prev = cleanup; prev && prev(); clear(root); render(root, {}).then((c) => { cleanup = c; }); }))),
     lockBar, filterBar, chipsHost, h('div', { style: { margin: '8px 0 10px' } }, summary), tableHost);
   let cleanup = null;
 

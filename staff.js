@@ -6,7 +6,8 @@ import { ctx, currentRun } from './ctx.js';
 import { EMP_STATUS, EMP_TYPES, statusChip, typeChip, rtwChip, rtwState, shiftText, weeklyPay, isCover, activeWarning, today, alCalc } from './hrkit.js';
 import { openProfile } from './profile.js';
 import { newCaseModal } from './hrcase.js';
-import { panel } from './panels.js';
+import { panel, expandAllBtn } from './panels.js';
+import { waButton } from './whatsapp.js';
 import { importModal, exportRows } from './importer.js';
 import { employeeSpec, EMPLOYEE_COLUMNS } from './specs.js';
 
@@ -17,17 +18,19 @@ const r1 = (n) => (n === null || n === undefined || n === '' ? '—' : String(Ma
 export async function render(root, params) {
   const canHR = ctx.can('manage_hr'), seeCases = ctx.can('page:hrcases'), run = ctx.can('page:payroll') ? currentRun() : null, isSuper = ctx.isSuper;
   let staff = [], projects = [], cases = [], runEmp = new Map(), al = new Map(), sel = new Set();
-  let proj = (params && params.project) || '', kind = 'perm', st = 'active', q = (params && params.q) || '', pq = '', quick = '';
+  let proj = (params && params.project) || '', am = '', kind = 'perm', st = 'active', q = (params && params.q) || '', pq = '', quick = '';
   const kpiHost = h('div'), railBody = h('div', { class: 'rail-in' }), mainBody = h('div', { class: 'main-in' }), sideBody = h('div', { class: 'side-in' });
   const mainTitle = h('span'), mainActs = h('div', { class: 'row', style: { gap: '6px' } });
-  const pRail = panel('Projects', railBody, { id: 'staff.rail', cls: 'p-rail', expand: false });
-  const pMain = panel(mainTitle, mainBody, { id: 'staff.main', cls: 'p-main', actions: mainActs, fill: true });
-  const pSide = panel('Insights', sideBody, { id: 'staff.side', cls: 'p-side' });
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Employees'), h('p', null, 'Every employee by project — permanent and temporary / cover kept apart. Fold a panel with − or open it full screen with ⤢.')),
-    h('div', { class: 'row wrap' }, canHR && seeCases ? h('button', { class: 'btn', onClick: () => newCaseModal(null, { onCreated: load }) }, icon('alert'), 'New HR case') : null,
+  const railSub = h('span', { class: 'psub2' }), sideSub = h('span', { class: 'psub2' });
+  const pMain = panel(mainTitle, mainBody, { id: 'staff.main', cls: 'p-main', actions: mainActs });
+  const pRail = panel(h('span', null, 'Projects overview ', railSub), railBody, { id: 'staff.rail', cls: 'p-rail' });
+  const pSide = panel(h('span', null, 'Insights ', sideSub), sideBody, { id: 'staff.side', cls: 'p-side' });
+  const stack = h('div', { class: 'hrstack' }, pMain, pRail, pSide);
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Employees'), h('p', null, 'Every employee by project — permanent and temporary / cover kept apart. Click a section to expand it; the corner button opens it full screen.')),
+    h('div', { class: 'row wrap' }, expandAllBtn(() => stack), canHR && seeCases ? h('button', { class: 'btn', onClick: () => newCaseModal(null, { onCreated: load }) }, icon('alert'), 'New HR case') : null,
       canHR ? h('button', { class: 'btn', onClick: () => importModal(employeeSpec(async (rows) => { const r = await importStaff(rows); await load(); return `${r.created} added (each with a new Employee ID), ${r.updated} updated`; })) }, icon('upload'), 'Upload employees') : null,
       h('button', { class: 'btn', onClick: exportXlsx }, icon('download'), 'Export'), canHR ? h('button', { class: 'btn primary', onClick: addPerson }, icon('plus'), 'Add employee') : null)),
-  kpiHost, h('div', { class: 'hrws2' }, pRail, pMain, pSide));
+  kpiHost, stack);
 
   const projOf = (e) => e.default_project || NOPROJ;
   const casesBy = () => { const m = new Map(); for (const c of cases) { if (!m.has(c.employee_id)) m.set(c.employee_id, []); m.get(c.employee_id).push(c); } return m; };
@@ -55,18 +58,18 @@ export async function render(root, params) {
     const list = [...by.entries()].filter(([k]) => !pq || k.toLowerCase().includes(pq)).sort((a, b) => (a[0] === NOPROJ) - (b[0] === NOPROJ) || natCompare(a[0], b[0]));
     const max = Math.max(1, ...list.map(([, o]) => o.perm + o.cover));
     const total = list.reduce((s, [, o]) => ({ perm: s.perm + o.perm, cover: s.cover + o.cover }), { perm: 0, cover: 0 });
-    const item = (key, label, o) => h('button', { class: 'pitem' + (proj === key ? ' on' : ''), onClick: () => { proj = key; sel.clear(); draw(); } },
+    const item = (key, label, o) => h('button', { class: 'pitem' + (proj === key ? ' on' : ''), onClick: () => { proj = key; sel.clear(); draw(); pMain.setOpen(true); pMain.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
       h('div', { class: 'row', style: { gap: '6px' } }, h('span', { class: 'pname' }, label), o.warn ? h('span', { class: 'dot red', title: `${o.warn} right-to-work issue(s)` }) : null, h('div', { class: 'grow' }), h('span', { class: 'pcount' }, String(o.perm + o.cover))),
       h('div', { class: 'pbar' }, h('i', { class: 'b-perm', style: { width: (o.perm / max * 100) + '%' } }), h('i', { class: 'b-cover', style: { width: (o.cover / max * 100) + '%' } })),
       h('div', { class: 'psub' }, `${o.perm} permanent · ${o.cover} temp/cover`));
-    clear(railBody).append(h('div', { class: 'rail-head' }, h('input', { type: 'search', placeholder: 'Find a project…', value: pq, onInput: debounce((ev) => { pq = ev.target.value.toLowerCase(); drawRail(); }, 120) })),
-      h('div', { class: 'rail-list' }, item('', 'All projects', total), list.map(([k, o]) => item(k, k, o))),
-      h('div', { class: 'rail-legend small' }, h('i', { class: 'b-perm' }), 'Permanent ', h('i', { class: 'b-cover' }), 'Temp / cover'));
+    railSub.textContent = `${list.length} project${list.length === 1 ? '' : 's'}`;
+    clear(railBody).append(h('div', { class: 'toolbar tight' }, h('input', { type: 'search', placeholder: 'Find a project…', value: pq, style: { width: '220px' }, onInput: debounce((ev) => { pq = ev.target.value.toLowerCase(); drawRail(); }, 120) }), h('div', { class: 'grow' }), h('span', { class: 'rail-legend small' }, h('i', { class: 'b-perm' }), 'Permanent ', h('i', { class: 'b-cover' }), 'Temp / cover')),
+      h('div', { class: 'projgrid' }, item('', 'All projects', total), list.map(([k, o]) => item(k, k, o))));
   }
 
-  const rows = (forKind) => staff.filter((e) => (!proj || projOf(e) === proj) && (forKind === 'cover' ? isCover(e) : !isCover(e))
+  const rows = (forKind) => staff.filter((e) => (!proj || projOf(e) === proj) && (!am || (e.area_manager || '(none)') === am) && (forKind === 'cover' ? isCover(e) : !isCover(e))
     && (quick === 'rtw' ? e.emp_status !== 'terminated' && ['expired', 'd30'].includes(rtwState(e.rtw_expiry)) : (st === 'all' || e.emp_status === st))
-    && (!q || [e.employee_code, e.full_name, e.email, e.ni_number, e.default_project, e.job_title, e.pay_group].some((x) => x && String(x).toLowerCase().includes(q))));
+    && (!q || [e.employee_code, e.full_name, e.email, e.ni_number, e.default_project, e.job_title, e.pay_group, e.area_manager, e.phone].some((x) => x && String(x).toLowerCase().includes(q))));
 
   function statusCell(e) {
     if (!canHR) return statusChip(e.emp_status);
@@ -105,13 +108,13 @@ export async function render(root, params) {
     const p = proj && projects.find((x) => x.name === proj);
     const totH = list.reduce((s, e) => s + (+e.weekly_hours || 0), 0), totP = list.reduce((s, e) => s + weeklyPay(e), 0);
     for (const id of [...sel]) if (!list.some((e) => e.id === id)) sel.delete(id);
-    clear(mainTitle).append(proj || 'All projects', p && (p.manager || p.manager_email) ? h('span', { class: 'psub2' }, ` Area manager: ${p.manager || ''}${p.manager_email ? ' · ' + p.manager_email : ''}`) : null);
+    clear(mainTitle).append('Employees', h('span', { class: 'psub2' }, ` · ${proj || 'all projects'}${am ? ' · ' + am : ''} · ${permN} permanent, ${covN} temp/cover`), p && (p.manager || p.manager_email) ? h('span', { class: 'psub2' }, ` · Area manager: ${p.manager || ''}`) : null);
     clear(mainActs).append(h('span', { class: 'mstat sm' }, 'Weekly hrs ', h('b', null, hrs(totH))), h('span', { class: 'mstat sm' }, 'Weekly pay ', h('b', null, money(totP))),
       isSuper && list.length ? h('button', { class: 'btn sm danger', title: 'Super admin only', onClick: () => removeMany(sel.size ? list.filter((e) => sel.has(e.id)) : list, sel.size ? `${sel.size} selected` : `all ${list.length} shown`) }, icon('trash'), sel.size ? `Delete ${sel.size} selected` : 'Delete all shown') : null);
     const allOn = list.length && list.slice(0, 800).every((e) => sel.has(e.id));
     const tbl = h('table', { class: 't hr-t' },
       h('thead', null, h('tr', null, isSuper ? h('th', null, h('input', { type: 'checkbox', checked: allOn, onChange: (ev) => { list.slice(0, 800).forEach((e) => (ev.target.checked ? sel.add(e.id) : sel.delete(e.id))); drawMain(); } })) : null,
-        ['Employee ID', 'Employee', 'Email', 'Project', 'Pay date', '£/h', 'Status', 'Contr. weeks', 'Shift timings', 'Weekly hrs', 'Weekly pay', 'AL accrued', 'AL left', 'RTW expiry', 'Hire date', 'Termination'].map((t, i) => h('th', { class: [5, 7, 9, 10, 11, 12].includes(i) ? 'num' : '' }, t)))),
+        ['Employee ID', 'Employee', 'Email', 'Project', 'Area manager', 'Pay date', '£/h', 'Status', 'Contr. weeks', 'Shift timings', 'Weekly hrs', 'Weekly pay', 'AL accrued', 'AL left', 'RTW expiry', 'Hire date', 'Termination'].map((t, i) => h('th', { class: [6, 8, 10, 11, 12, 13].includes(i) ? 'num' : '' }, t)))),
       h('tbody', null, list.slice(0, 800).map((e) => {
         const mine = cb.get(e.id) || [], open = mine.filter((c) => c.stage !== 'closed').length, w = activeWarning(mine), b = alOf(e);
         return h('tr', { class: 'click r-' + e.emp_status + (sel.has(e.id) ? ' selrow' : ''), onClick: (ev) => { if (ev.target.closest('input,select')) return; openProfile(e.id, { onChange: (n) => { if (n) { Object.assign(e, n); draw(); } else load(); } }); } },
@@ -119,25 +122,28 @@ export async function render(root, params) {
           h('td', { class: 'mono small' }, h('b', null, e.employee_code || '—')),
           h('td', null, h('div', { class: 'who' }, h('span', { class: 'avatar sm' }, initials(e.full_name)), h('div', null, h('b', null, e.full_name), h('div', { class: 'small muted' }, e.job_title || (e.ni_number || ''))),
             open ? h('span', { class: 'hpill g-investigation', title: `${open} open HR case(s)` }, `${open} case${open > 1 ? 's' : ''}`) : null, w ? h('span', { class: 'hpill v-high', title: `${w.warning_level} until ${dmy(w.warning_expiry)}` }, 'Warning') : null,
-            e.payroll_state === 'pending' ? h('span', { class: 'hpill r-d30', title: 'Waiting for the payroll team' }, 'New') : null)),
-          h('td', { class: 'small' }, e.email || h('span', { class: 'muted' }, '—')), h('td', { class: 'small' }, e.default_project || '—'), h('td', { class: 'small' }, e.pay_group ? h('span', { class: 'hpill grp' }, e.pay_group) : '—'),
+            e.payroll_state === 'pending' ? h('span', { class: 'hpill r-d30', title: 'Waiting for the payroll team' }, 'New') : null, waButton(e))),
+          h('td', { class: 'small' }, e.email || h('span', { class: 'muted' }, '—')), h('td', { class: 'small' }, e.default_project || '—'), h('td', { class: 'small' }, e.area_manager || h('span', { class: 'muted' }, '—')), h('td', { class: 'small' }, e.pay_group ? h('span', { class: 'hpill grp' }, e.pay_group) : '—'),
           h('td', { class: 'num' }, e.default_rate != null ? money(e.default_rate) : '—'), h('td', null, statusCell(e)), h('td', { class: 'num' }, e.contracted_weeks ?? '—'),
           h('td', { class: 'small nowrap' }, shiftText(e) || '—'), h('td', { class: 'num' }, e.weekly_hours != null ? hrs(e.weekly_hours) : '—'), h('td', { class: 'num' }, e.weekly_hours != null && e.default_rate != null ? money(weeklyPay(e)) : '—'),
           h('td', { class: 'num', title: `${r1(b.per_month)} days a month · ${r1(b.entitlement)} for this leave year` }, r1(b.accrued)), h('td', { class: 'num' + (+b.remaining < 0 ? ' neg' : '') }, r1(b.remaining)),
           h('td', null, rtwChip(e.rtw_expiry)), h('td', { class: 'small nowrap' }, dmy(e.hire_date) || '—'), h('td', { class: 'small nowrap' }, e.termination_date ? dmy(e.termination_date) : '—'));
       })),
-      list.length ? h('tfoot', null, h('tr', null, isSuper ? h('td') : null, h('td', { colspan: 9 }, h('b', null, `${list.length} ${kind === 'cover' ? 'temporary / cover' : 'permanent'} employee${list.length === 1 ? '' : 's'}${sel.size ? ` · ${sel.size} selected` : ''}`)), h('td', { class: 'num' }, h('b', null, hrs(totH))), h('td', { class: 'num' }, h('b', null, money(totP))), h('td', { colspan: 5 }))) : null);
+      list.length ? h('tfoot', null, h('tr', null, isSuper ? h('td') : null, h('td', { colspan: 10 }, h('b', null, `${list.length} ${kind === 'cover' ? 'temporary / cover' : 'permanent'} employee${list.length === 1 ? '' : 's'}${sel.size ? ` · ${sel.size} selected` : ''}`)), h('td', { class: 'num' }, h('b', null, hrs(totH))), h('td', { class: 'num' }, h('b', null, money(totP))), h('td', { colspan: 5 }))) : null);
     clear(mainBody).append(
       h('div', { class: 'toolbar tight' },
         h('div', { class: 'seg big' }, h('button', { class: kind === 'perm' ? 'on' : '', onClick: () => { kind = 'perm'; sel.clear(); draw(); } }, 'Permanent ', h('span', { class: 'cnt' }, String(permN))), h('button', { class: kind === 'cover' ? 'on' : '', onClick: () => { kind = 'cover'; sel.clear(); draw(); } }, 'Temporary / cover ', h('span', { class: 'cnt' }, String(covN)))),
         h('div', { class: 'seg' }, [['active', 'Active'], ['suspended', 'Suspended'], ['terminated', 'Terminated'], ['all', 'All']].map(([k, t]) => h('button', { class: st === k && quick !== 'rtw' ? 'on' : '', onClick: () => { st = k; quick = ''; draw(); } }, t))),
         quick === 'rtw' ? h('button', { class: 'btn sm', onClick: () => { quick = ''; st = 'active'; draw(); } }, icon('x'), 'RTW filter') : null,
+        h('select', { class: 'fsel', onChange: (ev) => { proj = ev.target.value; sel.clear(); draw(); } }, h('option', { value: '' }, 'All projects'), [...new Set(staff.map(projOf))].sort(natCompare).map((x) => h('option', { value: x, selected: x === proj }, x))),
+        h('select', { class: 'fsel', onChange: (ev) => { am = ev.target.value; sel.clear(); draw(); } }, h('option', { value: '' }, 'All area managers'), [...new Set(staff.map((e) => e.area_manager || '(none)'))].sort(natCompare).map((x) => h('option', { value: x, selected: x === am }, x))),
         h('div', { class: 'grow' }), h('input', { type: 'search', class: 'qsearch', placeholder: 'Search ID, name, email, NI…', value: q, onInput: debounce((ev) => { q = ev.target.value.toLowerCase(); drawMain(); }, 150) })),
       list.length ? h('div', { class: 'tablewrap hr-tw' }, tbl) : h('div', { class: 'card empty grow-empty' }, staff.length ? 'Nobody matches these filters.' : 'No employees yet — use “Upload employees” or “Add employee”.'));
   }
 
   function drawSide() {
     const base = staff.filter((e) => !proj || projOf(e) === proj), act = base.filter((e) => e.emp_status !== 'terminated');
+    sideSub.textContent = `· ${proj || 'all projects'}`;
     const sA = base.filter((e) => e.emp_status === 'active').length, sS = base.filter((e) => e.emp_status === 'suspended').length, sT = base.filter((e) => e.emp_status === 'terminated').length;
     const perm = act.filter((e) => !isCover(e)).length, cov = act.length - perm;
     const rtw = act.filter((e) => ['expired', 'd30', 'd90'].includes(rtwState(e.rtw_expiry))).sort((a, b) => String(a.rtw_expiry).localeCompare(String(b.rtw_expiry)));
@@ -174,7 +180,7 @@ export async function render(root, params) {
       return h('div', { class: 'stack' }, dl, dg,
         h('div', { class: 'msecs' },
           sec('Personal', inp('full_name', 'Full name *', { cls: 's2' }), inp('email', 'Email', { type: 'email' }), inp('phone', 'Phone'), inp('ni_number', 'NI number'), inp('job_title', 'Job title', { ph: 'Cleaning Operative' })),
-          sec('Job & pay', fld('Employment type', f.employment_type), inp('default_project', 'Project *', { list: 'add-proj', value: proj }), inp('pay_group', 'Pay date', { list: 'add-grp', ph: '25th' }), inp('default_rate', 'Hourly rate £ *', { type: 'number' }), inp('weekly_hours', 'Weekly budgeted hours', { type: 'number' }), inp('contracted_weeks', 'Contracted weeks', { type: 'number', ph: '52' })),
+          sec('Job & pay', fld('Employment type', f.employment_type), inp('default_project', 'Project *', { list: 'add-proj', value: proj }), inp('pay_group', 'Pay date', { list: 'add-grp', ph: '25th' }), inp('area_manager', 'Area manager', { ph: 'From the project if empty' }), inp('default_rate', 'Hourly rate £ *', { type: 'number' }), inp('weekly_hours', 'Weekly budgeted hours', { type: 'number' }), inp('contracted_weeks', 'Contracted weeks', { type: 'number', ph: '52' })),
           sec('Shift, RTW & leave', inp('shift_days', 'Shift days', { ph: 'Mon–Fri' }), h('div', { class: 'row s2', style: { gap: '8px' } }, inp('shift_start', 'Start', { type: 'time' }), inp('shift_end', 'Finish', { type: 'time' })), inp('rtw_type', 'RTW document', { ph: 'Passport / Share code' }), inp('rtw_expiry', 'RTW expiry', { type: 'date' }), inp('hire_date', 'Hire date', { type: 'date', value: today() }), inp('al_entitlement', 'AL days / year', { type: 'number', value: 20 }))),
         h('div', { class: 'small muted' }, 'A unique Employee ID is created automatically when you save.'),
         h('label', { class: 'row small' }, queue, 'Send to the payroll team as a new starter (they add them to the current payroll)'), err,

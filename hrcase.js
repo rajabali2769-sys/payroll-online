@@ -4,6 +4,7 @@ import { h, clear, toast, modal, dmy, ago, icon, confirmBox, initials, debounce 
 import { ctx } from './ctx.js';
 import { CASE_TYPES, CATEGORIES, SEVERITY, STAGES, OUTCOMES, stageChip, sevChip, statusChip, typeChip, templates, ESCALATION_TEMPLATE, letterVars, fill, letterHtml, printLetter, hrCfg, warningFor, addMonths, today } from './hrkit.js';
 import { textToHtml, parseEmails as parseList } from './mail.js';
+import { waButton } from './whatsapp.js';
 
 const canHR = () => ctx.can('manage_hr');
 const sel = (opts, val, attrs = {}) => h('select', attrs, opts.map((o) => { const [v, t] = Array.isArray(o) ? o : [o, o]; return h('option', { value: v, selected: v === val }, t); }));
@@ -69,7 +70,7 @@ export async function openCase(caseId, { onChange } = {}) {
       stepper,
       canHR() ? h('div', { class: 'hc-actions' },
         h('button', { class: 'btn primary', onClick: () => letterModal(c, emp, after) }, icon('file'), 'Letter / email to employee'),
-        h('button', { class: 'btn', onClick: () => escalateModal(c, emp, after) }, icon('alert'), 'Escalate to manager'),
+        h('button', { class: 'btn', onClick: () => escalateModal(c, emp, after) }, icon('alert'), 'Escalate to manager'), emp ? waButton(emp, { label: 'WhatsApp' }) : null,
         h('button', { class: 'btn', onClick: () => outcomeModal(false) }, icon('check'), 'Record outcome'),
         emp && emp.emp_status !== 'suspended' && emp.emp_status !== 'terminated' ? h('button', { class: 'btn', onClick: () => setEmpStatus('suspended') }, 'Suspend employee') : null,
         emp && emp.emp_status === 'suspended' ? h('button', { class: 'btn', onClick: () => setEmpStatus('active') }, 'Lift suspension') : null,
@@ -201,7 +202,7 @@ export async function newCaseModal(empPreset, { onCreated } = {}) {
     const dl = empPreset ? null : h('datalist', { id: 'hr-emp-list' }, staff.filter((e) => e.emp_status !== 'terminated').map((e) => h('option', { value: `${e.employee_code ? e.employee_code + ' · ' : ''}${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` })));
     const findEmp = () => empPreset || staff.find((e) => `${e.employee_code ? e.employee_code + ' · ' : ''}${e.full_name}${e.default_project ? ' — ' + e.default_project : ''}` === empSel.value) || staff.find((e) => e.full_name.toLowerCase() === empSel.value.trim().toLowerCase() || (e.employee_code && e.employee_code.toLowerCase() === empSel.value.trim().toLowerCase()));
     const mgr = h('input', { type: 'text' }), mgrMail = h('input', { type: 'email' });
-    const fillPoc = () => { const e = findEmp(); if (!e) return; const p = pocFor(e.default_project); if (p.manager && !mgr.value) mgr.value = p.manager; if (p.manager_email && !mgrMail.value) mgrMail.value = p.manager_email; };
+    const fillPoc = () => { const e = findEmp(); if (!e) return; const p = pocFor(e.default_project); const n = e.area_manager || p.manager, m = e.area_manager_email || p.manager_email; if (n && !mgr.value) mgr.value = n; if (m && !mgrMail.value) mgrMail.value = m; };
     if (empSel) empSel.addEventListener('change', fillPoc); setTimeout(fillPoc);
     const suspend = h('input', { type: 'checkbox' }), escalate = h('input', { type: 'checkbox' });
     f.type = sel(CASE_TYPES, 'Investigation'); f.type.onchange = () => { suspend.checked = f.type.value === 'Suspension'; };
