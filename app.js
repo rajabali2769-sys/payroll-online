@@ -3,7 +3,8 @@ import { h, clear, icon, toast, debounce, modal, initials } from './ui.js';
 import { ctx, brand as brandCfg, currentRuns, setRun } from './ctx.js';
 
 const PAGES = {
-  dashboard:  { title: 'Dashboard',       icon: 'home',   group: 'Overview', perm: 'page:dashboard',  load: () => import('./dashboard.js') },
+  dashboard:  { title: 'Payroll dashboard',       icon: 'home',   group: 'Overview', perm: 'page:dashboard',  load: () => import('./dashboard.js') },
+  hrdash:     { title: 'HR dashboard',    icon: 'users',  group: 'Overview', perm: 'page:hrdash',     load: () => import('./hrdash.js') },
   payrolls:   { title: 'All payrolls',    icon: 'grid',   group: 'Overview', perm: 'page:payrolls',   load: () => import('./payrolls.js') },
   payroll:    { title: 'Payroll',         icon: 'table',  group: 'Payroll',  perm: 'page:payroll',    load: () => import('./payroll.js') },
   clock:      { title: 'Clock in / out',  icon: 'clock',  group: 'Payroll',  perm: 'page:clock',      load: () => import('./clock.js') },

@@ -681,3 +681,24 @@ table.t tr.cur td { background: #f4f2ff !important; }
 .pcard { padding: 0 0 12px !important; } .pc-band { margin: 0 !important; width: 100%; }
 .pc-link { text-align: left; justify-content: flex-start; } .pc-link span.grow { text-align: left; }
 .calgrid { grid-template-columns: repeat(auto-fill, minmax(680px, 1fr)); } .calper { overflow-x: auto; } .calper input[type=date] { width: 132px !important; }
+
+/* =====================================================================================
+   v4.8  payroll / HR dashboards, pay calendar per project
+   ===================================================================================== */
+.dash-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+#app .dsec, .hrstack > .panel { margin-bottom: 0; } .main > div > .panel.dsec, .dsec { margin-bottom: 12px; }
+.dsec > .pbody { background: transparent; } .dsec-ov_head > .pbody, .dsec-ov_activity > .pbody { padding: 12px 14px; }
+.dsec-ov_head > .phd, .dsec-ov_activity > .phd { min-height: 38px; padding: 6px 12px; } .dsec-ov_head .ov, .dsec-ov_activity .ov { margin-bottom: 0; }
+.pcal-next { background: #f6f1ff; border: 1px solid #ebe2ff; border-radius: 14px; padding: 10px 14px; } .pcal-next span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #6b7290; font-weight: 700; } .pcal-next b { font-size: 18px; color: #15172b; } .pcal-next em { display: block; font-style: normal; font-size: 12.5px; color: #6b7290; }
+.pcal-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.pcal-day { border: 1px solid #ececf3; border-radius: 14px; padding: 10px 12px; cursor: pointer; background: #fff; display: flex; flex-direction: column; gap: 7px; transition: transform .12s, box-shadow .12s; }
+.pcal-day:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(30,30,80,.08); }
+.pcal-day.paid { background: #f7fdf9; } .pcal-day.over { border-color: #fecdd3; background: #fff7f8; } .pcal-day.appr { border-color: #c7d7fe; }
+.pcal-dates { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; font-size: 12.5px; } .pcal-dates span { display: block; font-size: 10px; text-transform: uppercase; color: #8a90a8; font-weight: 700; letter-spacing: .04em; }
+.pcal-projects { display: flex; flex-wrap: wrap; gap: 4px; max-height: 64px; overflow: auto; } .pcal-projects span { font-size: 11px; background: #f3f3f8; border-radius: 999px; padding: 1px 8px; color: #4b5168; }
+table.calt td { padding: 5px 8px; } table.calt tr.past td { opacity: .62; } .cald { width: 138px !important; padding: 5px 6px !important; font-size: 12.5px; }
+.cmpbar.stack2 { display: flex; position: relative; } .cmpbar.stack2 i { position: static !important; display: block; height: 100%; }
+.lgd { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: middle; }
+a.ktile { text-decoration: none !important; color: inherit; }
+.cmpbar i { background: linear-gradient(90deg, #7c5cff, #2563eb); } .cmpbar i.b-perm { background: #3b82f6; border-radius: 0; } .cmpbar i.b-cover { background: #c026d3; border-radius: 0; }
+.kstrip { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }

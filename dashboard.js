@@ -8,7 +8,8 @@ import { openEscalate, pocFor, summarise } from './escalate.js';
 import { go } from './app.js';
 import { openLineDrawer } from './line-drawer.js';
 import { overview } from './overview.js';
-import { panel } from './panels.js';
+import { panel as section, expandAllBtn } from './panels.js';
+import { loadCalendarPeriod } from './api.js';
 
 const num = (v) => +v || 0;
 const who = (email) => (email ? email.split('@')[0] : 'someone');
@@ -79,11 +80,11 @@ export async function render(root) {
   const onDoc = (e) => { if (!e.target.closest || !e.target.closest('.searchbox')) closeResults(); };
   document.addEventListener('click', onDoc);
 
-  const ovHost = h('div');
-  root.append(ovHost, panel('Charts, budgets & widgets', h('div', null,
-    h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Dashboard'), h('p', null, 'Where this pay run stands, what needs a look, and one click into the detail.')), h('div', { class: 'row' }, h('button', { class: 'btn', onClick: () => customise() }, icon('gear'), 'Customise'), runPicker(() => load()))),
+  root.append(
+    h('div', { class: 'dash-bar' }, h('div', { class: 'grow' }, h('span', { class: 'eyebrow' }, 'Payroll dashboard')),
+      h('button', { class: 'btn sm', onClick: () => customise() }, icon('gear'), 'Customise'), expandAllBtn(() => body), runPicker(() => { location.reload(); })),
     h('div', { class: 'searchbox', style: { marginBottom: '14px' } }, h('span', { class: 'sglass' }, icon('search')), input, results),
-    body), { id: 'dash.more', sub: ' · pay dates, projects over budget, trends and the rest of the dashboard' }));
+    body);
 
   // ---------- maths for the page ----------
   function analyse() {
@@ -448,6 +449,27 @@ export async function render(root) {
         h('div', { class: 'small', style: { opacity: .8, marginTop: '10px' } }, 'Hours decide: more hours worked than budgeted = over budget.')));
   }
 
+  // ---------- pay calendar for this payroll's month ----------
+  function payCalCard() {
+    const rows = S.cal || [], today = new Date().toISOString().slice(0, 10);
+    if (!rows.length) return h('div', { class: 'card pad' }, h('div', { class: 'row' }, h('span', { class: 'grow small muted' }, `No pay calendar found for “${S.run.label}”. Import the year’s pay calendar on the Pay calendar page (the month must be named like the payroll, e.g. ${S.run.label}).`), h('a', { class: 'btn sm', href: '#/calendar' }, icon('cal'), 'Pay calendar')));
+    const g = new Map(); for (const r of rows) { if (!g.has(r.pay_group)) g.set(r.pay_group, []); g.get(r.pay_group).push(r); }
+    const groups = [...g].map(([k, rs]) => ({ k, rs, pay: rs.map((r) => r.pay_date).filter(Boolean).sort()[0], val: rs.map((r) => r.validation_date).filter(Boolean).sort()[0], from: rs.map((r) => r.reconcile_from).filter(Boolean).sort()[0], to: rs.map((r) => r.reconcile_to).filter(Boolean).sort().pop() })).sort((a, b) => String(a.pay).localeCompare(String(b.pay)));
+    const days = (d) => (d ? Math.round((Date.parse(d) - Date.parse(today)) / 864e5) : null);
+    const next = groups.find((x) => x.pay && x.pay >= today);
+    const lineCount = (k) => S.lines.filter((l) => l.pay_group === k).length;
+    const stat = (x) => { const dv = days(x.val), dp = days(x.pay); if (dp !== null && dp < 0) return ['Paid', 'paid']; if (dp === 0) return ['Pay day today', 'over']; if (dv !== null && dv <= 0) return [`Validation done · pay in ${dp}d`, 'appr']; if (dv !== null && dv <= 3) return [`Validate in ${dv}d`, 'over']; return [`In ${dp}d`, 'pend']; };
+    return h('div', { class: 'card pad' },
+      h('div', { class: 'row wrap', style: { gap: '10px', marginBottom: '10px' } },
+        next ? h('div', { class: 'pcal-next' }, h('span', null, 'Next pay day'), h('b', null, `${next.k} · ${dmy(next.pay)}`), h('em', null, days(next.pay) === 0 ? 'today' : `in ${days(next.pay)} day(s) · validation ${dmy(next.val)}`)) : h('div', { class: 'pcal-next' }, h('span', null, 'All pay days this month are done')),
+        h('div', { class: 'grow' }), h('a', { class: 'btn sm', href: '#/calendar' }, icon('cal'), 'Full pay calendar')),
+      h('div', { class: 'pcal-strip' }, groups.map((x) => { const [t, c] = stat(x);
+        return h('div', { class: 'pcal-day ' + c, onClick: () => go('payroll', { group: x.k }), title: x.rs.map((r) => `${r.project_name}: ${dmy(r.reconcile_from)} – ${dmy(r.reconcile_to)}`).join('\n') },
+          h('div', { class: 'row' }, h('b', { class: 'grow' }, x.k === 'LWD' ? 'Last working day' : x.k), h('span', { class: 'spill ' + c }, t)),
+          h('div', { class: 'pcal-dates' }, h('div', null, h('span', null, 'Window'), `${dm(x.from)} – ${dm(x.to)}`), h('div', null, h('span', null, 'Validation'), dm(x.val)), h('div', null, h('span', null, 'Disbursement'), h('b', null, dm(x.pay)))),
+          h('div', { class: 'small muted' }, `${x.rs.length} project(s) · ${lineCount(x.k)} lines`), h('div', { class: 'pcal-projects' }, x.rs.map((r) => h('span', null, r.project_name || 'all')))); })));
+  }
+
   // ---------- choose what you see (per person) ----------
   const roleDefault = () => (ctx.settings.dashboard_defaults || {})[ctx.me.role];
   function customise() {
@@ -460,7 +482,7 @@ export async function render(root) {
         return h('div', { class: 'wrow' }, h('input', { type: 'checkbox', checked: shown.has(id), onChange: (e) => { e.target.checked ? shown.add(id) : shown.delete(id); } }), h('div', { class: 'grow' }, w.title, h('div', { class: 'small muted', style: { fontWeight: 400 } }, w.desc)),
           h('button', { class: 'mv', disabled: i === 0, onClick: () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; draw(); } }, '↑'), h('button', { class: 'mv', disabled: i === order.length - 1, onClick: () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; draw(); } }, '↓')); })); };
       draw();
-      const roleSel = h('select', null, ['admin', 'editor', 'viewer'].map((r) => h('option', { value: r }, r)));
+      const roleSel = h('select', null, ['admin', 'editor', 'viewer', 'hr'].map((r) => h('option', { value: r }, r)));
       return h('div', { class: 'stack' }, h('div', { class: 'small muted' }, 'Tick what you want on your dashboard and use the arrows to put it in order. This only changes your own view.'), list,
         h('div', { class: 'row wrap', style: { justifyContent: 'flex-end' } },
           ctx.can('manage_settings') ? h('div', { class: 'row small', style: { marginRight: 'auto', gap: '6px' } }, 'Make this the default for', roleSel, h('button', { class: 'btn sm', onClick: async () => { const d = { ...(ctx.settings.dashboard_defaults || {}) }; d[roleSel.value] = { hidden: WIDGETS.map((w) => w.id).filter((id) => !shown.has(id)) }; try { await saveSetting('dashboard_defaults', d); ctx.settings = await loadSettings(); toast(`Saved as the default for ${roleSel.value}`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }, 'Save as default')) : null,
@@ -472,10 +494,13 @@ export async function render(root) {
   // ---------- page ----------
   function paint() {
     const run = S.run, A = analyse();
-    const W = { compare: () => compareCard(), board_top: () => boardTop(A), board_bottom: () => boardBottom(A), hero: () => heroCard(A), checklist: () => trackerCard(A), kpis: () => kpisRow(A), donuts: () => donutsCard(A), escalations: () => escalationCard(A), missing: () => missingCard(), chart: () => chartCard(A), table: () => tableCard(A),
+    const ovArgs = { run: S.run, lines: view(), periods: S.periods, adhoc: S.adhoc, onReload: () => softReload(), state: (S.ov = S.ov || {}) };
+    const W = { ov_head: () => overview({ ...ovArgs, parts: ['head'] }), ov_activity: () => overview({ ...ovArgs, parts: ['main'] }), paycal: () => payCalCard(), compare: () => compareCard(), board_top: () => boardTop(A), board_bottom: () => boardBottom(A), hero: () => heroCard(A), checklist: () => trackerCard(A), kpis: () => kpisRow(A), donuts: () => donutsCard(A), escalations: () => escalationCard(A), missing: () => missingCard(), chart: () => chartCard(A), table: () => tableCard(A),
       attention: () => h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', marginBottom: '14px' } }, attentionCard(A), exceptionCard('Most hours over budget', 'Over'), exceptionCard('Most hours under budget', 'Under')) };
     const ids = resolveLayout(ctx.prefs.dashboard, roleDefault());
-    clear(body).append(focusBar(), ...ids.map((id) => (W[id] ? W[id]() : null)).filter(Boolean), !ids.length ? h('div', { class: 'card empty' }, 'Everything is hidden. Use “Customise” to choose what you want to see.') : null,
+    const wrap = (id) => { if (!W[id]) return null; let el; try { el = W[id](); } catch (e) { console.error(e); el = h('div', { class: 'notice err' }, 'This section could not be drawn: ' + e.message); } if (!el) return null; const w = WIDGETS.find((x) => x.id === id) || { title: id };
+      return section(w.title, el, { id: 'dw.' + id, open: true, cls: 'dsec dsec-' + id }); };
+    clear(body).append(focusBar(), ...ids.map(wrap).filter(Boolean), !ids.length ? h('div', { class: 'card empty' }, 'Everything is hidden. Use “Customise” to choose what you want to see.') : null,
       ctx.can('delete_run') && run.status !== 'locked' ? h('div', { class: 'card pad', style: { marginTop: '22px' } }, h('h3', null, 'Administration'), h('p', { class: 'small muted' }, 'Deleting a pay run removes all of its lines for everyone.'),
         h('button', { class: 'btn danger sm', onClick: async () => {
           if (await confirmBox('Delete this pay run?', `“${run.label}” and all of its lines will be permanently removed for every user.`, 'Delete run', true)) {
@@ -492,9 +517,8 @@ export async function render(root) {
     const vis = resolveLayout(ctx.prefs.dashboard, roleDefault());
     if (vis.includes('board_top')) { [S.daily, S.leaveRows] = await Promise.all([loadDailyForRun(S.run.id).catch(() => []), loadRunLeave(S.run.id).catch(() => [])]); }
     if (vis.includes('compare')) await cmpLoad();
+    S.cal = vis.includes('paycal') ? await loadCalendarPeriod(S.run.stream, S.run.label).catch(() => []) : [];
     paint();
-    S.ov = S.ov || {};
-    try { clear(ovHost).append(overview({ run: S.run, lines: S.lines, periods: S.periods, adhoc: S.adhoc, onReload: () => softReload(), state: S.ov, picker: runPicker(() => { location.reload(); }) })); } catch (e) { console.error(e); }
   }
   const softReload = debounce(() => load().catch(console.error), 700);
 

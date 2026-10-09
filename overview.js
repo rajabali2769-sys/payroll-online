@@ -10,7 +10,7 @@ import { openLineDrawer } from './line-drawer.js';
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(+v) ? 0 : +v);
 let staffCache = null, staffAt = 0;
 
-export function overview({ run, lines, periods, adhoc, onReload, state, picker }) {
+export function overview({ run, lines, periods, adhoc, onReload, state, picker, parts = ['head', 'main'] }) {
   const host = h('div', { class: 'ov' });
   const st = Object.assign(state || {}, { group: '', status: '', q: '', sel: null, ...(state || {}) });
   const payDateOf = (g) => (periods.find((p) => p.pay_group === g) || {}).pay_date || null;
@@ -49,7 +49,7 @@ export function overview({ run, lines, periods, adhoc, onReload, state, picker }
   }
 
   host.append(
-    h('div', { class: 'ov-head' },
+    parts.includes('head') ? h('div', { class: 'ov-headwrap' }, h('div', { class: 'ov-head' },
       h('div', null, h('div', { class: 'ov-hi' }, `Welcome back, ${first} 👋`), h('h1', { class: 'ov-title' }, `Payroll - ${run.label}`)), picker ? h('div', { class: 'ov-pick' }, picker) : null,
       h('div', { class: 'grow' }),
       h('button', { class: 'ov-search', onClick: () => import('./search.js').then((m) => m.quickSearch()) }, icon('search'), h('span', null, 'Search now'), h('kbd', null, 'Ctrl K')),
@@ -58,8 +58,8 @@ export function overview({ run, lines, periods, adhoc, onReload, state, picker }
     h('div', { class: 'ov-kpis' },
       card('k1', 'pound', 'Total payroll processed', money(gross), `${people} employee${people === 1 ? '' : 's'} on this payroll · ${runState[0].toLowerCase()}`),
       card('k2', 'trend', 'Hours over budget & ad-hoc', `${hrs(overH)} h`, `${overN} line${overN === 1 ? '' : 's'} over budget · ${hrs(adhocH)} ad-hoc hours charged to clients`),
-      card('k3', 'cal', 'Leave & sick pay', money(ssp), `${hrs(leaveH)} h paid leave · ${onLeave} employee${onLeave === 1 ? '' : 's'} on leave or sick`)),
-    h('div', { class: 'ov-main' },
+      card('k3', 'cal', 'Leave & sick pay', money(ssp), `${hrs(leaveH)} h paid leave · ${onLeave} employee${onLeave === 1 ? '' : 's'} on leave or sick`))) : null,
+    parts.includes('main') ? h('div', { class: 'ov-main' },
       h('div', { class: 'ov-list' },
         h('div', { class: 'ov-lh' }, h('div', null, h('b', null, 'Payroll activities'), h('div', { class: 'small muted' }, 'Every employee on this payroll — click a row to see their details, double-click to open the line')), h('div', { class: 'grow' }),
           h('input', { type: 'search', class: 'ov-q', placeholder: 'Find…', value: st.q, onInput: debounce((ev) => { st.q = ev.target.value.toLowerCase(); st.sel = null; drawTable(); drawCard(); }, 150) }),
@@ -67,7 +67,7 @@ export function overview({ run, lines, periods, adhoc, onReload, state, picker }
           h('select', { class: 'ov-chip', title: 'Status', onChange: (ev) => { st.status = ev.target.value; st.sel = null; drawTable(); drawCard(); } }, h('option', { value: '' }, 'All statuses'), [['pend', 'Pending'], ['appr', 'Approved'], ['paid', 'Paid'], ['over', 'Over budget']].map(([v, t]) => h('option', { value: v, selected: st.status === v }, t))),
           ctx.canEdit ? h('a', { class: 'ov-plus', href: '#/payroll', title: 'Open the payroll to add a line' }, '+') : null),
         tableHost),
-      cardHost));
+      cardHost) : null);
   drawTable(); drawCard();
   // photos and job titles come from the employee records
   (async () => { try { if (!staffCache || Date.now() - staffAt > 120000) { staffCache = await loadStaff(); staffAt = Date.now(); } staffById = new Map(staffCache.map((e) => [e.id, e])); drawTable(); drawCard(); } catch { /* no access to employees */ } })();

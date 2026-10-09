@@ -8,7 +8,10 @@ export function toISO(v) {
   if (v === null || v === undefined || v === '') return null;
   if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
   if (typeof v === 'number' && v > 20000 && v < 80000) return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
-  const s = String(v).trim(); let m;
+  let s = String(v).trim(); let m;
+  s = s.replace(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+/i, '');            // "Monday 15-Dec-25"
+  const MO = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+  if ((m = s.match(/^(\d{1,2})[\s\-/.]([a-z]{3,9})[\s\-/.,]+(\d{2,4})$/i)) && MO[m[2].toLowerCase().slice(0, m[2].toLowerCase().startsWith('sept') ? 4 : 3)]) { const mo = MO[m[2].toLowerCase().slice(0, 3)]; const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${String(mo).padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
   if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
   if ((m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})$/))) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
   const d = new Date(s); return isNaN(d) ? undefined : d.toISOString().slice(0, 10);

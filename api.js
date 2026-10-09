@@ -613,11 +613,14 @@ export const addClockEvent = async (row) => ok(await sb.from('clock_events').ins
 // =====================================================================================================
 export const loadCalendar = async (year) => fetchAll(() => { let q = sb.from('pay_calendar').select('*'); if (year) q = q.eq('year', year); return q.order('stream').order('period_month').order('period').order('pay_group').order('id'); });
 export const loadCalendarYears = async () => [...new Set((ok(await sb.from('pay_calendar').select('year').limit(5000)) || []).map((r) => r.year))].sort();
-export async function saveCalendarRows(rows) { for (const part of chunk(rows, 200)) ok(await sb.from('pay_calendar').upsert(part, { onConflict: 'stream,period,pay_group' })); }
+export async function saveCalendarRows(rows) { for (const part of chunk(rows, 200)) ok(await sb.from('pay_calendar').upsert(part, { onConflict: 'stream,period,row_key' })); }
 export const updateCalendarRow = async (id, patch) => ok(await sb.from('pay_calendar').update(patch).eq('id', id));
 export const deleteCalendarRows = async (ids) => { for (const part of chunk(ids, 100)) ok(await sb.from('pay_calendar').delete().in('id', part)); };
 // copy one period of the year calendar into a pay run's windows
-export async function applyCalendar(runId, rows) {
+export async function applyCalendar(runId, rowsIn) {
+  const by = new Map();
+  for (const r of rowsIn) { const k = r.pay_group; if (!by.has(k)) by.set(k, []); by.get(k).push(r); }
+  const rows = [...by.values()].map((rs) => { const c = new Map(); for (const r of rs) { const key = [r.reconcile_from, r.reconcile_to, r.pay_date].join('|'); c.set(key, (c.get(key) || 0) + 1); } const best = [...c].sort((a, b) => b[1] - a[1])[0][0].split('|'); return { pay_group: rs[0].pay_group, reconcile_from: best[0] || null, reconcile_to: best[1] || null, pay_date: best[2] || null, notes: rs.length > 1 ? `From the year calendar (${rs.length} projects)` : null }; });
   for (const r of rows) await savePeriod({ run_id: runId, pay_group: r.pay_group, reconcile_from: r.reconcile_from || null, reconcile_to: r.reconcile_to || null, pay_date: r.pay_date || null, notes: r.notes || null });
 }
 // photos: stored small (square JPEG), shown with short-lived links fetched in batches
@@ -642,3 +645,5 @@ export async function uploadPhoto(empId, blob) {
   return path;
 }
 export const removePhoto = async (empId) => ok(await sb.rpc('set_employee_photo', { p_emp: empId, p_path: '' }));
+export const applyProjectWindows = async (runId, stream, period) => ok(await sb.rpc('apply_project_windows', { p_run: runId, p_stream: stream, p_period: period }));
+export const loadCalendarPeriod = async (stream, period) => ok(await sb.from('pay_calendar').select('*').eq('stream', stream).eq('period', period).order('pay_group').order('project_name'));

@@ -2,7 +2,7 @@
 //  • This payroll — the reconciliation window and pay day for each pay date of the open pay run.
 //  • Year pay calendar — every payroll period of the year (they change every month), kept once, imported / exported from Excel,
 //    and copied into a pay run with "Apply to payroll".
-import { loadPeriods, loadSummary, savePeriod, deletePeriod, onLive, loadCalendar, loadCalendarYears, saveCalendarRows, updateCalendarRow, deleteCalendarRows, applyCalendar } from './api.js';
+import { loadPeriods, loadSummary, savePeriod, deletePeriod, onLive, loadCalendar, loadCalendarYears, saveCalendarRows, updateCalendarRow, deleteCalendarRows, applyCalendar, applyProjectWindows } from './api.js';
 import { h, clear, money, dmy, toast, natCompare, icon, debounce, modal, confirmBox } from './ui.js';
 import { ctx, currentRun, runPicker } from './ctx.js';
 import { panel, expandAllBtn } from './panels.js';
@@ -13,27 +13,28 @@ const weeks = (a, b) => (a && b ? Math.round(((Date.parse(b) - Date.parse(a)) / 
 const plusYear = (d) => { if (!d) return null; const x = new Date(String(d).slice(0, 10) + 'T00:00:00Z'); x.setUTCFullYear(x.getUTCFullYear() + 1); return x.toISOString().slice(0, 10); };
 // "October 2026", "Oct-26", "10/2026" → 2026-10-01
 function monthOf(text, fallbackDate) {
-  const s = String(text || '').toLowerCase(); let m = MONTHS.findIndex((x) => s.includes(x) || s.includes(x.slice(0, 3)));
+  const s0 = String(text || '').toLowerCase().trim(); const yy = s0.match(/^(\d{2})[\s\-/]([a-z]{3})/); const s = yy ? `${yy[2]} 20${yy[1]}` : s0; let m = MONTHS.findIndex((x) => s.includes(x) || s.includes(x.slice(0, 3)));
   let y = (s.match(/(20\d{2})/) || [])[1] || ((s.match(/[\s\-/'](\d{2})\b/) || [])[1] ? '20' + s.match(/[\s\-/'](\d{2})\b/)[1] : null);
   if (m < 0) { const mm = s.match(/^(\d{1,2})[/\-.](20\d{2})$/); if (mm) { m = +mm[1] - 1; y = mm[2]; } }
   if (m >= 0 && y) return `${y}-${String(m + 1).padStart(2, '0')}-01`;
   return fallbackDate ? String(fallbackDate).slice(0, 7) + '-01' : null;
 }
 const STREAM = (v) => { const s = String(v || '').toLowerCase(); if (!s) return null; if (/^m/.test(s)) return 'monthly'; if (/^f|fort|2\s*w|bi/.test(s)) return 'fortnightly'; return undefined; };
+const PAYDAY = (v) => { const s = String(v || '').trim(); if (!s) return null; if (/last\s*working|^lwd$/i.test(s)) return 'LWD'; return s; };
 const SPEC_COLS = [
-  { key: 'stream', label: 'Payroll type', required: true, map: STREAM, example: 'Monthly', help: 'Monthly or Fortnightly' },
-  { key: 'period', label: 'Payroll period', required: true, example: 'October 2026', help: 'The name of the payroll, e.g. October 2026 or Fortnight 21. Use the same name every row of that payroll.', aliases: ['period', 'payroll', 'month'] },
-  { key: 'pay_group', label: 'Pay date group', required: true, example: '25th', help: 'The pay date group: 24th, 25th, 26th, 28th, 29th, LWD, 5th …', aliases: ['pay group', 'pay date', 'group'] },
-  { key: 'reconcile_from', label: 'Reconcile from', type: 'date', example: '22/09/2026', aliases: ['from', 'window from', 'start'] },
-  { key: 'reconcile_to', label: 'Reconcile to', type: 'date', example: '19/10/2026', aliases: ['to', 'window to', 'end'] },
-  { key: 'pay_date', label: 'Paid on', type: 'date', example: '24/10/2026', aliases: ['payment date', 'paid', 'pay day'] },
-  { key: 'cutoff_date', label: 'Timesheet cut-off', type: 'date', example: '20/10/2026', aliases: ['cut off', 'cutoff', 'deadline'] },
-  { key: 'year', label: 'Year', type: 'number', help: 'Optional — worked out from the dates if empty' },
+  { key: 'project_name', label: 'Project Name', required: true, example: 'NHS Cornwall', help: 'The project. Leave empty only for a whole pay-date row.', aliases: ['project', 'site'] },
+  { key: 'period', label: 'Month', required: true, example: '26-Oct', help: 'The payroll month: 26-Oct, Oct-26, October 2026 or 01/10/2026 all work.', aliases: ['payroll period', 'period', 'payroll month'], map: (v) => { if (typeof v === 'number' && v > 20000) { const d = new Date(Math.round((v - 25569) * 86400000)); return `${MONTHS[d.getUTCMonth()][0].toUpperCase()}${MONTHS[d.getUTCMonth()].slice(1)} ${d.getUTCFullYear()}`; } const m = monthOf(v); if (!m) return String(v).trim(); return `${MONTHS[+m.slice(5, 7) - 1][0].toUpperCase()}${MONTHS[+m.slice(5, 7) - 1].slice(1)} ${m.slice(0, 4)}`; } },
+  { key: 'reconcile_from', label: 'Reconciled from', type: 'date', required: true, example: 'Monday 21-Sep-26', aliases: ['reconcile from', 'from', 'window from'] },
+  { key: 'reconcile_to', label: 'Reconciled till', type: 'date', required: true, example: 'Sunday 18-Oct-26', aliases: ['reconcile to', 'reconciled to', 'to', 'till'] },
+  { key: 'validation_date', label: 'Validation/Pay Slips Date', type: 'date', example: 'Wednesday 21-Oct-26', aliases: ['validation', 'pay slips date', 'payslips date', 'validation date'] },
+  { key: 'pay_date', label: 'Disbursement /RTI Date', type: 'date', example: 'Friday 23-Oct-26', aliases: ['disbursement/rti date', 'disbursement', 'rti date', 'paid on', 'pay date'] },
+  { key: 'pay_group', label: 'Actual Pay Day', required: true, map: PAYDAY, example: '25th', help: '24th, 25th, 26th, 28th, 29th, Last Working day (saved as LWD), 5th …', aliases: ['pay day', 'pay date group', 'pay group'] },
+  { key: 'stream', label: 'Payroll type', map: STREAM, example: 'Monthly', help: 'Optional — Monthly if empty' },
   { key: 'notes', label: 'Notes' },
 ];
-const calSpec = (save) => ({ title: 'Upload the year pay calendar', file: 'pay_calendar_template.xlsx', columns: SPEC_COLS, save,
-  help: ['One row for each pay date group in each payroll period.', 'Example: October 2026 has 24th, 25th, LWD … → one row each, all with Payroll period “October 2026”.', 'Uploading again updates rows with the same Payroll type + Payroll period + Pay date group, so you can correct and re-upload.'],
-  examples: [['Monthly', 'October 2026', '24th', '21/09/2026', '18/10/2026', '24/10/2026', '19/10/2026', 2026, ''], ['Monthly', 'October 2026', '25th', '22/09/2026', '19/10/2026', '25/10/2026', '20/10/2026', 2026, ''], ['Fortnightly', 'Fortnight 21', 'FN', '28/09/2026', '11/10/2026', '16/10/2026', '12/10/2026', 2026, '']],
+const calSpec = (save) => ({ title: 'Upload the pay calendar (Project Name, Month, Reconciled from … Actual Pay Day)', file: 'pay_calendar_template.xlsx', columns: SPEC_COLS, save,
+  help: ['One row per project per month — the same layout as your pay calendar sheet (you can paste it straight in; the S.No column is ignored).', 'Dates can be written like “Monday 21-Sep-26”, 21/09/2026 or as Excel dates.', 'Uploading again updates the same project + month, so you can correct and re-upload.'],
+  examples: [['NHS Cornwall', '26-Oct', 'Monday 28-Sep-26', 'Sunday 25-Oct-26', 'Wednesday 28-Oct-26', 'Friday 30-Oct-26', 'Last Working day', 'Monthly', ''], ['Monkseaton', '26-Oct', 'Monday 21-Sep-26', 'Sunday 18-Oct-26', 'Wednesday 21-Oct-26', 'Friday 23-Oct-26', '24th', 'Monthly', '']],
   rowCheck: (r) => (r.reconcile_from && r.reconcile_to && r.reconcile_to < r.reconcile_from ? 'Reconcile to is before Reconcile from' : null) });
 
 export async function render(root) {
@@ -59,18 +60,33 @@ export async function render(root) {
 
   function applyDialog(preset) {
     if (!run) return toast('Open or import a payroll first', 'err');
-    modal(`Apply the calendar to ${run.label}`, (done) => {
+    modal(`Apply the pay calendar to ${run.label}`, (done) => {
       const all = cal.filter((x) => x.stream === run.stream);
       const pers = [...new Set(all.map((x) => x.period))];
-      if (!pers.length) return h('div', { class: 'stack' }, h('div', { class: 'notice warn' }, `There are no ${run.stream} periods in the ${year} calendar. Upload or add them first (change the year if needed).`), h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Close')));
+      if (!pers.length) return h('div', { class: 'stack' }, h('div', { class: 'notice warn' }, `There is no ${run.stream} pay calendar yet. Import it first.`), h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Close')));
       const sel = h('select', null, pers.map((p) => h('option', { value: p, selected: p === (preset || guessPeriod(run, all)) }, p)));
-      const prev = h('div');
-      const show = () => { const rows = all.filter((x) => x.period === sel.value).sort((a, b) => natCompare(a.pay_group, b.pay_group));
-        clear(prev).append(h('table', { class: 't' }, h('thead', null, h('tr', null, ['Pay date', 'From', 'To', 'Paid on'].map((t) => h('th', null, t)))), h('tbody', null, rows.map((r) => h('tr', null, h('td', null, h('span', { class: 'pill grp' }, r.pay_group)), h('td', null, dmy(r.reconcile_from)), h('td', null, dmy(r.reconcile_to)), h('td', null, dmy(r.pay_date))))))); };
+      const weeksBox = h('input', { type: 'checkbox', checked: true }), prev = h('div'), res = h('div');
+      const show = () => { const rows = all.filter((x) => x.period === sel.value); const g = new Map(); for (const r of rows) { if (!g.has(r.pay_group)) g.set(r.pay_group, []); g.get(r.pay_group).push(r); }
+        clear(prev).append(h('div', { class: 'tablewrap', style: { maxHeight: '40vh' } }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Pay day', 'Projects', 'Window (most projects)', 'Disbursement'].map((t) => h('th', null, t)))),
+          h('tbody', null, [...g].sort((x, y) => natCompare(x[0], y[0])).map(([k, rs]) => h('tr', null, h('td', null, h('span', { class: 'pill grp' }, k)), h('td', { class: 'small' }, rs.map((r) => r.project_name || '(all)').join(', ')), h('td', { class: 'small nowrap' }, `${dmy(rs[0].reconcile_from)} – ${dmy(rs[0].reconcile_to)}`), h('td', { class: 'small nowrap' }, dmy(rs[0].pay_date)))))))); };
       sel.onchange = show; show();
-      return h('div', { class: 'stack' }, h('label', { class: 'fld' }, 'Calendar period', sel), prev,
-        h('div', { class: 'small muted' }, 'Each pay date’s window in this payroll is set from the calendar. Pay dates not in the calendar are left as they are. It never changes pay — only which weeks count towards the budget.'),
-        h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async () => { try { await applyCalendar(run.id, all.filter((x) => x.period === sel.value)); done(); toast('Calendar applied to this payroll', 'ok'); loadRun(); } catch (e) { toast(e.message, 'err'); } } }, 'Apply')));
+      return h('div', { class: 'stack' }, h('label', { class: 'fld' }, 'Calendar month', sel), prev,
+        h('label', { class: 'row small', style: { alignItems: 'flex-start' } }, weeksBox, h('span', null, h('b', null, 'Also set the budget weeks for every project'), ' — each line counts only the weeks inside its own project’s window (a week counts when 4+ of its days are inside). Recommended: projects in the same pay day can have different windows.')),
+        res,
+        h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Close'), h('button', { class: 'btn primary', onClick: async (ev) => {
+          ev.currentTarget.disabled = true;
+          try {
+            const rows = all.filter((x) => x.period === sel.value);
+            await applyCalendar(run.id, rows);
+            let out = [];
+            if (weeksBox.checked) out = await applyProjectWindows(run.id, run.stream, sel.value);
+            const calProjects = [...new Set(rows.filter((r) => r.project_name).map((r) => r.project_name))];
+            const hit = new Set(out.map((o) => (o.project_name || '').toLowerCase()));
+            clear(res).append(weeksBox.checked ? h('div', { class: 'notice ok' }, `Done. Pay day windows set; budget weeks set for ${out.reduce((a, o) => a + o.lines, 0)} lines in ${out.length} project(s).`) : h('div', { class: 'notice ok' }, 'Pay day windows set.'),
+              weeksBox.checked && out.length < calProjects.length ? h('div', { class: 'small muted' }, `${calProjects.length - out.length} calendar project(s) had no lines in this payroll, or are spelt differently (add an alias in Projects & POCs): `, calProjects.filter((p) => !out.some((o) => (o.project_name || '').toLowerCase().includes(p.toLowerCase().split(' ')[0]))).slice(0, 30).join(', ')) : null);
+            toast('Pay calendar applied', 'ok'); loadRun(); void hit;
+          } catch (e) { toast(e.message, 'err'); } finally { ev.target.disabled = false; }
+        } }, 'Apply')));
     }, { wide: true });
   }
 
@@ -103,9 +119,9 @@ export async function render(root) {
 
   // ---------- year calendar ----------
   const saveRows = async (rows) => {
-    const out = rows.map((r) => { const pm = r.stream === 'monthly' ? monthOf(r.period, r.pay_date || r.reconcile_to) : (r.pay_date || r.reconcile_to ? String(r.pay_date || r.reconcile_to).slice(0, 7) + '-01' : null);
-      const y = r.year || +(String(r.pay_date || r.reconcile_to || pm || '').slice(0, 4)) || year;
-      return { year: y, stream: r.stream, period: String(r.period).trim(), period_month: pm, pay_group: String(r.pay_group).trim(), reconcile_from: r.reconcile_from || null, reconcile_to: r.reconcile_to || null, pay_date: r.pay_date || null, cutoff_date: r.cutoff_date || null, notes: r.notes || null }; });
+    const out = rows.map((r) => { r.stream = r.stream || 'monthly'; const pm = r.stream === 'monthly' ? monthOf(r.period, r.pay_date || r.reconcile_to) : (r.pay_date || r.reconcile_to ? String(r.pay_date || r.reconcile_to).slice(0, 7) + '-01' : null);
+      const y = r.year || +(String(pm || r.reconcile_to || r.pay_date || '').slice(0, 4)) || year;
+      return { year: y, stream: r.stream, period: String(r.period).trim(), period_month: pm, pay_group: String(r.pay_group).trim(), project_name: r.project_name ? String(r.project_name).trim() : null, reconcile_from: r.reconcile_from || null, reconcile_to: r.reconcile_to || null, validation_date: r.validation_date || null, pay_date: r.pay_date || null, cutoff_date: r.cutoff_date || null, notes: r.notes || null }; });
     await saveCalendarRows(out); const ys = [...new Set(out.map((r) => r.year))]; if (ys.length && !ys.includes(year)) year = ys[0]; await loadYear();
     return `${out.length} calendar row(s) saved${ys.length ? ' for ' + ys.join(', ') : ''}`;
   };
@@ -125,7 +141,7 @@ export async function render(root) {
   async function copyToNextYear() {
     const rows = cal.filter((x) => x.year === year); if (!rows.length) return toast('Nothing to copy', 'err');
     if (!(await confirmBox(`Copy ${year} to ${year + 1}?`, `${rows.length} rows are copied with every date moved on one year (and the year in the period names changed). Then correct the dates that differ.`, 'Copy'))) return;
-    try { await saveCalendarRows(rows.map((r) => ({ year: year + 1, stream: r.stream, period: r.period.replace(String(year), String(year + 1)).replace(new RegExp(`\\b${String(year).slice(2)}\\b`), String(year + 1).slice(2)), period_month: plusYear(r.period_month), pay_group: r.pay_group, reconcile_from: plusYear(r.reconcile_from), reconcile_to: plusYear(r.reconcile_to), pay_date: plusYear(r.pay_date), cutoff_date: plusYear(r.cutoff_date), notes: r.notes }))); year += 1; toast('Copied — check the dates', 'ok'); await loadYear(); }
+    try { await saveCalendarRows(rows.map((r) => ({ year: year + 1, stream: r.stream, period: r.period.replace(String(year), String(year + 1)).replace(new RegExp(`\\b${String(year).slice(2)}\\b`), String(year + 1).slice(2)), period_month: plusYear(r.period_month), pay_group: r.pay_group, project_name: r.project_name || null, reconcile_from: plusYear(r.reconcile_from), reconcile_to: plusYear(r.reconcile_to), validation_date: plusYear(r.validation_date), pay_date: plusYear(r.pay_date), cutoff_date: plusYear(r.cutoff_date), notes: r.notes }))); year += 1; toast('Copied — check the dates', 'ok'); await loadYear(); }
     catch (e) { toast(e.message, 'err'); }
   }
 
@@ -135,31 +151,55 @@ export async function render(root) {
     if (!years.includes(year) && years.length) year = years.includes(new Date().getFullYear()) ? new Date().getFullYear() : years[years.length - 1];
     drawYear(); if (run) loadRun();
   }
+  let pq = '';
   function drawYear() {
     const rows = cal.filter((x) => x.year === year && x.stream === stream);
     const pers = [...new Set(rows.map((x) => x.period))].sort((a, b) => { const ra = rows.find((x) => x.period === a), rb = rows.find((x) => x.period === b); return String(ra.period_month || ra.pay_date || '').localeCompare(String(rb.period_month || rb.pay_date || '')) || natCompare(a, b); });
-    yearSub.textContent = `· ${year} · ${pers.length} ${stream} payroll${pers.length === 1 ? '' : 's'}`;
+    const projects = new Set(rows.map((r) => r.project_name).filter(Boolean));
+    yearSub.textContent = `· ${year} · ${pers.length} month${pers.length === 1 ? '' : 's'} · ${projects.size} projects · ${rows.length} rows`;
     const yrs = [...new Set([...years, year, new Date().getFullYear(), new Date().getFullYear() + 1])].sort();
     clear(yearActs).append(
       h('button', { class: 'btn sm', onClick: () => downloadTemplate(calSpec(null)).catch((e) => toast(e.message, 'err')) }, icon('download'), 'Template'),
       can ? h('button', { class: 'btn sm', onClick: () => importModal(calSpec(saveRows)) }, icon('upload'), 'Import') : null,
-      h('button', { class: 'btn sm', onClick: () => exportRows({ columns: SPEC_COLS.map((c) => ({ ...c, out: (r) => (c.key === 'stream' ? (r.stream === 'monthly' ? 'Monthly' : 'Fortnightly') : r[c.key]) })) }, cal.filter((x) => x.year === year), `pay_calendar_${year}.xlsx`).catch((e) => toast(e.message, 'err')) }, icon('download'), 'Export'));
-    const inp = (r, key) => { const i = h('input', { type: 'date', value: r[key] || '', disabled: !can, style: { width: '140px' } }); i.addEventListener('change', async () => { try { await updateCalendarRow(r.id, { [key]: i.value || null }); r[key] = i.value || null; toast('Saved', 'ok'); } catch (e) { toast(e.message, 'err'); } }); return i; };
-    const runForPeriod = (p) => ctx.runs.find((r) => r.stream === stream && guessPeriod(r, rows) === p && String(r.label).toLowerCase() === p.toLowerCase()) || null;
+      h('button', { class: 'btn sm', onClick: () => exportRows({ columns: [{ key: 'sno', label: 'S.No', out: (r, i) => '' }, ...SPEC_COLS.map((c) => ({ ...c, out: (r) => (c.key === 'stream' ? (r.stream === 'monthly' ? 'Monthly' : 'Fortnightly') : c.key === 'pay_group' && r.pay_group === 'LWD' ? 'Last Working day' : r[c.key]) }))] }, cal.filter((x) => x.year === year).map((r, i) => ({ ...r, sno: i + 1 })), `pay_calendar_${year}.xlsx`).catch((e) => toast(e.message, 'err')) }, icon('download'), 'Export'));
+    const today = new Date().toISOString().slice(0, 10);
+    const inp = (r, key) => { const i = h('input', { type: 'date', value: r[key] || '', disabled: !can, class: 'cald' }); i.addEventListener('change', async () => { try { await updateCalendarRow(r.id, { [key]: i.value || null }); r[key] = i.value || null; toast('Saved', 'ok'); } catch (e) { toast(e.message, 'err'); } }); return i; };
+    const curPeriod = run && run.stream === stream ? guessPeriod(run, rows) : null;
+    const monthPanel = (p) => {
+      const rs = rows.filter((x) => x.period === p && (!pq || (x.project_name || '').toLowerCase().includes(pq) || x.pay_group.toLowerCase().includes(pq))).sort((a, b) => natCompare(a.pay_group, b.pay_group) || natCompare(a.project_name || '', b.project_name || ''));
+      const pays = [...new Set(rows.filter((x) => x.period === p).map((x) => x.pay_date).filter(Boolean))].sort();
+      const sub = ` · ${rows.filter((x) => x.period === p).length} projects · pay days ${pays.length ? dmy(pays[0]).slice(0, 6) + ' – ' + dmy(pays[pays.length - 1]).slice(0, 6) : '—'}`;
+      const body = h('div', null, h('div', { class: 'tablewrap', style: { maxHeight: '62vh' } }, h('table', { class: 't calt' },
+        h('thead', null, h('tr', null, ['Project', 'Actual pay day', 'Reconciled from', 'Reconciled till', 'Validation / payslips', 'Disbursement / RTI', 'Weeks', ''].map((t) => h('th', null, t)))),
+        h('tbody', null, rs.map((r) => h('tr', { class: r.pay_date && r.pay_date < today ? 'past' : '' }, h('td', null, h('b', null, r.project_name || '(whole pay day)')), h('td', null, h('span', { class: 'pill grp' }, r.pay_group === 'LWD' ? 'Last working day' : r.pay_group)),
+          h('td', null, inp(r, 'reconcile_from')), h('td', null, inp(r, 'reconcile_to')), h('td', null, inp(r, 'validation_date')), h('td', null, inp(r, 'pay_date')), h('td', { class: 'num small' }, weeks(r.reconcile_from, r.reconcile_to)),
+          h('td', null, can ? h('button', { class: 'btn sm', title: 'Remove this row', onClick: async () => { if (await confirmBox('Remove this row?', `${r.project_name || r.pay_group} · ${p}`, 'Remove', true)) { try { await deleteCalendarRows([r.id]); loadYear(); } catch (e) { toast(e.message, 'err'); } } } }, icon('x')) : null)))))));
+      return panel(h('span', null, p, curPeriod === p ? h('span', { class: 'hpill g-outcome', style: { marginLeft: '8px' } }, 'this payroll') : null), body,
+        { id: `calm.${year}.${stream}.${p}`, sub, open: !!pq || curPeriod === p, actions: can && run && run.stream === stream ? h('button', { class: 'btn sm', onClick: (e) => { e.stopPropagation(); applyDialog(p); } }, `Apply to ${run.label}`) : null });
+    };
     clear(yearBody).append(
       h('div', { class: 'toolbar tight' },
         h('select', { class: 'fsel', onChange: (e) => { year = +e.target.value; drawYear(); } }, yrs.map((y) => h('option', { value: y, selected: y === year }, String(y)))),
-        h('div', { class: 'seg big' }, [['monthly', 'Monthly'], ['fortnightly', 'Fortnightly']].map(([k, t]) => h('button', { class: stream === k ? 'on' : '', onClick: () => { stream = k; drawYear(); } }, t, ' ', h('span', { class: 'cnt' }, String(new Set(cal.filter((x) => x.year === year && x.stream === k).map((x) => x.period)).size))))),
-        h('div', { class: 'grow' }), can ? h('button', { class: 'btn sm', onClick: addPeriodDialog }, icon('plus'), 'Add period') : null, can ? h('button', { class: 'btn sm', onClick: copyToNextYear }, `Copy ${year} → ${year + 1}`) : null,
-        ctx.isSuper && rows.length ? h('button', { class: 'btn sm danger', onClick: async () => { if (await confirmBox(`Delete the ${year} ${stream} calendar?`, `${rows.length} rows will be deleted. Pay runs that already used them keep their dates.`, 'Delete', true)) { await deleteCalendarRows(rows.map((r) => r.id)); loadYear(); } } }, icon('trash')) : null),
-      pers.length ? h('div', { class: 'calgrid' }, pers.map((p) => { const rs = rows.filter((x) => x.period === p).sort((a, b) => natCompare(a.pay_group, b.pay_group)); const isRun = run && run.stream === stream && guessPeriod(run, rows) === p;
-        return h('div', { class: 'calper' + (isRun ? ' cur' : '') },
-          h('div', { class: 'calhd' }, h('b', null, p), isRun ? h('span', { class: 'hpill g-outcome' }, 'this payroll') : null, h('div', { class: 'grow' }), can && run && run.stream === stream ? h('button', { class: 'btn sm', onClick: () => applyDialog(p) }, `Apply to ${run.label}`) : null),
-          h('table', { class: 't' }, h('thead', null, h('tr', null, ['Pay date', 'Reconcile from', 'Reconcile to', 'Paid on', 'Cut-off', 'Weeks', ''].map((t) => h('th', null, t)))),
-            h('tbody', null, rs.map((r) => h('tr', null, h('td', null, h('span', { class: 'pill grp' }, r.pay_group)), h('td', null, inp(r, 'reconcile_from')), h('td', null, inp(r, 'reconcile_to')), h('td', null, inp(r, 'pay_date')), h('td', null, inp(r, 'cutoff_date')), h('td', { class: 'num small' }, weeks(r.reconcile_from, r.reconcile_to)),
-              h('td', null, can ? h('button', { class: 'btn sm', title: 'Remove this row', onClick: async () => { try { await deleteCalendarRows([r.id]); loadYear(); } catch (e) { toast(e.message, 'err'); } } }, icon('x')) : null)))))); void runForPeriod; }))
-        : h('div', { class: 'card empty' }, h('b', null, `No ${stream} pay calendar for ${year} yet.`), h('div', { class: 'small muted', style: { margin: '6px 0 10px' } }, 'Download the template, fill in every payroll of the year (one row per pay date group), and import it. Or add periods one at a time.'),
+        h('div', { class: 'seg big' }, [['monthly', 'Monthly'], ['fortnightly', 'Fortnightly']].map(([k, t]) => h('button', { class: stream === k ? 'on' : '', onClick: () => { stream = k; drawYear(); } }, t))),
+        h('input', { type: 'search', placeholder: 'Find a project or pay day…', value: pq, style: { width: '220px' }, onInput: debounce((e) => { pq = e.target.value.toLowerCase().trim(); drawYear(); }, 250) }),
+        h('div', { class: 'grow' }), can ? h('button', { class: 'btn sm', onClick: () => addProjectRow() }, icon('plus'), 'Add a row') : null, can ? h('button', { class: 'btn sm', onClick: copyToNextYear }, `Copy ${year} → ${year + 1}`) : null,
+        ctx.isSuper && rows.length ? h('button', { class: 'btn sm danger', title: `Delete the whole ${year} ${stream} calendar`, onClick: async () => { if (await confirmBox(`Delete the ${year} ${stream} calendar?`, `${rows.length} rows will be deleted. Pay runs that already used them keep their dates.`, 'Delete', true)) { await deleteCalendarRows(rows.map((r) => r.id)); loadYear(); } } }, icon('trash')) : null),
+      pers.length ? h('div', { class: 'hrstack' }, pers.map(monthPanel))
+        : h('div', { class: 'card empty' }, h('b', null, `No ${stream} pay calendar for ${year} yet.`), h('div', { class: 'small muted', style: { margin: '6px 0 10px' } }, 'Download the template (same columns as your pay calendar sheet), paste your rows in and import it.'),
           can ? h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onClick: () => downloadTemplate(calSpec(null)).catch((e) => toast(e.message, 'err')) }, icon('download'), 'Template'), h('button', { class: 'btn primary', onClick: () => importModal(calSpec(saveRows)) }, icon('upload'), 'Import the year')) : null));
+  }
+  function addProjectRow() {
+    modal('Add a project to the pay calendar', (done) => {
+      const f = {}; const dt = (k, l) => h('label', { class: 'fld' }, l, (f[k] = h('input', { type: 'date' })));
+      f.project_name = h('input', { type: 'text', placeholder: 'Project name' }); f.period = h('input', { type: 'text', placeholder: 'e.g. November 2026' }); f.pay_group = h('input', { type: 'text', placeholder: '24th / 25th / LWD / 5th …' });
+      return h('div', { class: 'stack' }, h('div', { class: 'form-grid g3' }, h('label', { class: 'fld' }, 'Project', f.project_name), h('label', { class: 'fld' }, 'Month', f.period), h('label', { class: 'fld' }, 'Actual pay day', f.pay_group),
+          dt('reconcile_from', 'Reconciled from'), dt('reconcile_to', 'Reconciled till'), dt('validation_date', 'Validation / payslips'), dt('pay_date', 'Disbursement / RTI')),
+        h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async () => {
+          const r = Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value.trim() || null])); if (!r.project_name || !r.period || !r.pay_group) return toast('Project, month and pay day are needed', 'err');
+          r.period = SPEC_COLS[1].map(r.period); r.pay_group = PAYDAY(r.pay_group); r.stream = stream;
+          try { await saveRows([r]); done(); toast('Added', 'ok'); } catch (e) { toast(e.message, 'err'); }
+        } }, 'Add')));
+    }, { wide: true });
   }
 
   await loadYear();
