@@ -8,6 +8,8 @@ import { openProfile } from './profile.js';
 import { newCaseModal } from './hrcase.js';
 import { panel, expandAllBtn } from './panels.js';
 import { waButton } from './whatsapp.js';
+import { avatar } from './photos.js';
+import { profileCard } from './profilecard.js';
 import { importModal, exportRows } from './importer.js';
 import { employeeSpec, EMPLOYEE_COLUMNS } from './specs.js';
 
@@ -18,7 +20,7 @@ const r1 = (n) => (n === null || n === undefined || n === '' ? '—' : String(Ma
 export async function render(root, params) {
   const canHR = ctx.can('manage_hr'), seeCases = ctx.can('page:hrcases'), run = ctx.can('page:payroll') ? currentRun() : null, isSuper = ctx.isSuper;
   let staff = [], projects = [], cases = [], runEmp = new Map(), al = new Map(), sel = new Set();
-  let proj = (params && params.project) || '', am = '', kind = 'perm', st = 'active', q = (params && params.q) || '', pq = '', quick = '';
+  let selId = null; let proj = (params && params.project) || '', am = '', kind = 'perm', st = 'active', q = (params && params.q) || '', pq = '', quick = '';
   const kpiHost = h('div'), railBody = h('div', { class: 'rail-in' }), mainBody = h('div', { class: 'main-in' }), sideBody = h('div', { class: 'side-in' });
   const mainTitle = h('span'), mainActs = h('div', { class: 'row', style: { gap: '6px' } });
   const railSub = h('span', { class: 'psub2' }), sideSub = h('span', { class: 'psub2' });
@@ -26,7 +28,7 @@ export async function render(root, params) {
   const pRail = panel(h('span', null, 'Projects overview ', railSub), railBody, { id: 'staff.rail', cls: 'p-rail' });
   const pSide = panel(h('span', null, 'Insights ', sideSub), sideBody, { id: 'staff.side', cls: 'p-side' });
   const stack = h('div', { class: 'hrstack' }, pMain, pRail, pSide);
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Employees'), h('p', null, 'Every employee by project — permanent and temporary / cover kept apart. Click a section to expand it; the corner button opens it full screen.')),
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Employees'), h('p', null, 'Every employee by project — permanent and temporary / cover kept apart. Click a person to see their card, double-click (or “Full profile”) to open everything.')),
     h('div', { class: 'row wrap' }, expandAllBtn(() => stack), canHR && seeCases ? h('button', { class: 'btn', onClick: () => newCaseModal(null, { onCreated: load }) }, icon('alert'), 'New HR case') : null,
       canHR ? h('button', { class: 'btn', onClick: () => importModal(employeeSpec(async (rows) => { const r = await importStaff(rows); await load(); return `${r.created} added (each with a new Employee ID), ${r.updated} updated`; })) }, icon('upload'), 'Upload employees') : null,
       h('button', { class: 'btn', onClick: exportXlsx }, icon('download'), 'Export'), canHR ? h('button', { class: 'btn primary', onClick: addPerson }, icon('plus'), 'Add employee') : null)),
@@ -117,10 +119,10 @@ export async function render(root, params) {
         ['Employee ID', 'Employee', 'Email', 'Project', 'Area manager', 'Pay date', '£/h', 'Status', 'Contr. weeks', 'Shift timings', 'Weekly hrs', 'Weekly pay', 'AL accrued', 'AL left', 'RTW expiry', 'Hire date', 'Termination'].map((t, i) => h('th', { class: [6, 8, 10, 11, 12, 13].includes(i) ? 'num' : '' }, t)))),
       h('tbody', null, list.slice(0, 800).map((e) => {
         const mine = cb.get(e.id) || [], open = mine.filter((c) => c.stage !== 'closed').length, w = activeWarning(mine), b = alOf(e);
-        return h('tr', { class: 'click r-' + e.emp_status + (sel.has(e.id) ? ' selrow' : ''), onClick: (ev) => { if (ev.target.closest('input,select')) return; openProfile(e.id, { onChange: (n) => { if (n) { Object.assign(e, n); draw(); } else load(); } }); } },
+        return h('tr', { class: 'click r-' + e.emp_status + (sel.has(e.id) ? ' selrow' : '') + (selId === e.id ? ' cur' : ''), 'data-id': e.id, onClick: (ev) => { if (ev.target.closest('input,select,button')) return; selId = e.id; mainBody.querySelectorAll('tr.cur').forEach((r) => r.classList.remove('cur')); ev.currentTarget.classList.add('cur'); drawCard(); }, onDblclick: (ev) => { if (ev.target.closest('input,select,button')) return; openFull(e); } },
           isSuper ? h('td', null, h('input', { type: 'checkbox', checked: sel.has(e.id), onChange: (ev) => { ev.target.checked ? sel.add(e.id) : sel.delete(e.id); drawMain(); } })) : null,
           h('td', { class: 'mono small' }, h('b', null, e.employee_code || '—')),
-          h('td', null, h('div', { class: 'who' }, h('span', { class: 'avatar sm' }, initials(e.full_name)), h('div', null, h('b', null, e.full_name), h('div', { class: 'small muted' }, e.job_title || (e.ni_number || ''))),
+          h('td', null, h('div', { class: 'who' }, avatar(e, 'sm'), h('div', null, h('b', null, e.full_name), h('div', { class: 'small muted' }, e.job_title || (e.ni_number || ''))),
             open ? h('span', { class: 'hpill g-investigation', title: `${open} open HR case(s)` }, `${open} case${open > 1 ? 's' : ''}`) : null, w ? h('span', { class: 'hpill v-high', title: `${w.warning_level} until ${dmy(w.warning_expiry)}` }, 'Warning') : null,
             e.payroll_state === 'pending' ? h('span', { class: 'hpill r-d30', title: 'Waiting for the payroll team' }, 'New') : null, waButton(e))),
           h('td', { class: 'small' }, e.email || h('span', { class: 'muted' }, '—')), h('td', { class: 'small' }, e.default_project || '—'), h('td', { class: 'small' }, e.area_manager || h('span', { class: 'muted' }, '—')), h('td', { class: 'small' }, e.pay_group ? h('span', { class: 'hpill grp' }, e.pay_group) : '—'),
@@ -138,9 +140,17 @@ export async function render(root, params) {
         h('select', { class: 'fsel', onChange: (ev) => { proj = ev.target.value; sel.clear(); draw(); } }, h('option', { value: '' }, 'All projects'), [...new Set(staff.map(projOf))].sort(natCompare).map((x) => h('option', { value: x, selected: x === proj }, x))),
         h('select', { class: 'fsel', onChange: (ev) => { am = ev.target.value; sel.clear(); draw(); } }, h('option', { value: '' }, 'All area managers'), [...new Set(staff.map((e) => e.area_manager || '(none)'))].sort(natCompare).map((x) => h('option', { value: x, selected: x === am }, x))),
         h('div', { class: 'grow' }), h('input', { type: 'search', class: 'qsearch', placeholder: 'Search ID, name, email, NI…', value: q, onInput: debounce((ev) => { q = ev.target.value.toLowerCase(); drawMain(); }, 150) })),
-      list.length ? h('div', { class: 'tablewrap hr-tw' }, tbl) : h('div', { class: 'card empty grow-empty' }, staff.length ? 'Nobody matches these filters.' : 'No employees yet — use “Upload employees” or “Add employee”.'));
+      (setTimeout(drawCard), null),
+      list.length ? h('div', { class: 'emp-split' }, h('div', { class: 'tablewrap hr-tw' }, tbl), cardHost) : h('div', { class: 'card empty grow-empty' }, staff.length ? 'Nobody matches these filters.' : 'No employees yet — use “Upload employees” or “Add employee”.'));
   }
 
+  const cardHost = h('div', { class: 'emp-card' });
+  const openFull = (e) => openProfile(e.id, { onChange: (n) => { if (n) { Object.assign(e, n); draw(); } else load(); } });
+  function drawCard() {
+    const list = rows(kind); if (!selId || !list.some((e) => e.id === selId)) selId = list[0] ? list[0].id : null;
+    const e = staff.find((x) => x.id === selId);
+    clear(cardHost).append(profileCard(e, { onOpen: e ? () => openFull(e) : null, onHistory: e && ctx.can('page:payroll') ? () => openProfile(e.id, { tab: 'pay' }) : null, onPhoto: () => { drawMain(); } }));
+  }
   function drawSide() {
     const base = staff.filter((e) => !proj || projOf(e) === proj), act = base.filter((e) => e.emp_status !== 'terminated');
     sideSub.textContent = `· ${proj || 'all projects'}`;

@@ -2,6 +2,7 @@
 import { loadStaffOne, updateStaff, loadCasesFor, loadEmployeeLines, loadProjects, onLive, loadAlOne, loadEmployeeLeave, loadAssignments, loadCoverHours, loadStaff } from './api.js';
 import { panel as mkPanel, expandAllBtn } from './panels.js';
 import { waButton } from './whatsapp.js';
+import { avatar, pickPhoto, canPhoto } from './photos.js';
 import { h, clear, toast, dmy, money, hrs, icon, initials, debounce, modal } from './ui.js';
 import { ctx } from './ctx.js';
 import { EMP_STATUS, EMP_TYPES, statusChip, typeChip, stageChip, sevChip, rtwChip, rtwState, daysTo, shiftText, weeklyPay, activeWarning, today, alCalc, isCover } from './hrkit.js';
@@ -143,7 +144,7 @@ export async function openProfile(empId, { onChange, tab: startTab } = {}) {
     const stat = (l, v, cls) => h('div', { class: 'pstat ' + (cls || '') }, h('span', null, l), h('b', null, v));
     clear(panel).append(
       h('div', { class: 'phead s-' + (e.emp_status || 'active') },
-        h('div', { class: 'avatar big' }, initials(e.full_name)),
+        h('div', { class: 'ph-wrap', title: 'Add or change photo', onClick: () => pickPhoto(e, () => { draw(); changed(); }) }, avatar(e, 'big'), canPhoto(e) ? h('span', { class: 'pc-cam' }, '📷') : null),
         h('div', { class: 'grow' }, h('div', { class: 'eyebrow', style: { color: 'rgba(255,255,255,.85)' } }, e.employee_code || ''), h('h2', null, e.full_name), h('div', { class: 'row wrap', style: { gap: '6px', marginTop: '4px' } }, statusChip(e.emp_status), typeChip(e.employment_type), e.default_project ? h('span', { class: 'hpill grp' }, e.default_project) : null, e.payroll_state === 'pending' ? h('span', { class: 'hpill r-d30' }, 'Waiting for payroll') : null, w ? h('span', { class: 'hpill v-high' }, `${w.warning_level} until ${dmy(w.warning_expiry)}`) : null),
           h('div', { class: 'small muted', style: { marginTop: '4px' } }, [e.job_title, e.email, e.phone].filter(Boolean).join(' · '))),
         h('div', { class: 'row wrap', style: { gap: '6px' } }, waButton(e, { label: 'WhatsApp' }), canHR ? [

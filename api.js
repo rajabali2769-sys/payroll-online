@@ -115,7 +115,7 @@ const listeners = new Set();
 export const onLive = (cb) => { listeners.add(cb); return () => listeners.delete(cb); };
 export function startLive(statusCb) {
   const ch = sb.channel('payroll-live');
-  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects', 'hr_cases', 'hr_case_events', 'cover_assignments', 'cover_hours']) {
+  for (const table of ['payroll_lines', 'line_weeks', 'daily_hours', 'pay_runs', 'pay_periods', 'employees', 'projects', 'hr_cases', 'hr_case_events', 'cover_assignments', 'cover_hours', 'pay_calendar']) {
     ch.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => {
       const evt = { table, type: p.eventType, row: p.new && Object.keys(p.new).length ? p.new : null, old: p.old && Object.keys(p.old).length ? p.old : null };
       listeners.forEach((cb) => { try { cb(evt); } catch (e) { console.error(e); } });
@@ -449,7 +449,7 @@ export const deleteAdhocDay = async (lineId, date) => ok(await sb.from('adhoc_ho
 // =====================================================================================================
 // v4.4: HR — employee records, HR cases, recruitment new starters
 // =====================================================================================================
-export const STAFF_COLS = 'id,employee_code,pay_group,al_entitlement,al_carry,al_taken_before,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,employment_type,emp_status,job_title,contracted_weeks,shift_days,shift_start,shift_end,weekly_hours,weekly_pay,rtw_type,rtw_expiry,hire_date,termination_date,termination_reason,suspended_from,payroll_state,payroll_run_id,payroll_added_at,payroll_added_by,added_by_email,hr_notes,created_at,updated_at';
+export const STAFF_COLS = 'id,photo_path,employee_code,pay_group,al_entitlement,al_carry,al_taken_before,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,employment_type,emp_status,job_title,contracted_weeks,shift_days,shift_start,shift_end,weekly_hours,weekly_pay,rtw_type,rtw_expiry,hire_date,termination_date,termination_reason,suspended_from,payroll_state,payroll_run_id,payroll_added_at,payroll_added_by,added_by_email,hr_notes,created_at,updated_at';
 export const loadStaff = async () => fetchAll(() => sb.from('employees').select(STAFF_COLS).order('full_name').order('id'));
 export const loadStaffOne = async (id) => ok(await sb.from('employees').select(STAFF_COLS).eq('id', id).maybeSingle());
 export async function addStaff(row) {
@@ -607,3 +607,38 @@ export async function syncClockShifts(run, emp, shifts, payGroup) {
 }
 export const saveProjectLocation = async (id, patch) => ok(await sb.from('projects').update(patch).eq('id', id));
 export const addClockEvent = async (row) => ok(await sb.from('clock_events').insert(row));
+
+// =====================================================================================================
+// v4.7: year pay calendar, employee photos
+// =====================================================================================================
+export const loadCalendar = async (year) => fetchAll(() => { let q = sb.from('pay_calendar').select('*'); if (year) q = q.eq('year', year); return q.order('stream').order('period_month').order('period').order('pay_group').order('id'); });
+export const loadCalendarYears = async () => [...new Set((ok(await sb.from('pay_calendar').select('year').limit(5000)) || []).map((r) => r.year))].sort();
+export async function saveCalendarRows(rows) { for (const part of chunk(rows, 200)) ok(await sb.from('pay_calendar').upsert(part, { onConflict: 'stream,period,pay_group' })); }
+export const updateCalendarRow = async (id, patch) => ok(await sb.from('pay_calendar').update(patch).eq('id', id));
+export const deleteCalendarRows = async (ids) => { for (const part of chunk(ids, 100)) ok(await sb.from('pay_calendar').delete().in('id', part)); };
+// copy one period of the year calendar into a pay run's windows
+export async function applyCalendar(runId, rows) {
+  for (const r of rows) await savePeriod({ run_id: runId, pay_group: r.pay_group, reconcile_from: r.reconcile_from || null, reconcile_to: r.reconcile_to || null, pay_date: r.pay_date || null, notes: r.notes || null });
+}
+// photos: stored small (square JPEG), shown with short-lived links fetched in batches
+const photoCache = new Map(); let photoQueue = new Map(), photoTimer = null;
+export function photoUrl(path) {
+  if (!path) return Promise.resolve(null);
+  if (photoCache.has(path)) return photoCache.get(path);
+  const p = new Promise((res) => { photoQueue.set(path, res); });
+  photoCache.set(path, p);
+  if (!photoTimer) photoTimer = setTimeout(async () => {
+    const q = photoQueue; photoQueue = new Map(); photoTimer = null;
+    try { const { data } = await sb.storage.from('photos').createSignedUrls([...q.keys()], 6 * 3600); for (const d of data || []) { const r = q.get(d.path); if (r) r(d.signedUrl || null); q.delete(d.path); } } catch { /* offline */ }
+    for (const r of q.values()) r(null);
+  }, 30);
+  return p;
+}
+export async function uploadPhoto(empId, blob) {
+  const path = `${empId}/${Date.now()}.jpg`;
+  const { error } = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+  if (error) throw new Error('Could not store the photo: ' + error.message);
+  ok(await sb.rpc('set_employee_photo', { p_emp: empId, p_path: path }));
+  return path;
+}
+export const removePhoto = async (empId) => ok(await sb.rpc('set_employee_photo', { p_emp: empId, p_path: '' }));

@@ -4,6 +4,7 @@ import { h, clear, modal, initials, debounce } from './ui.js';
 import { statusChip, typeChip } from './hrkit.js';
 import { openProfile } from './profile.js';
 import { waButton } from './whatsapp.js';
+import { avatar } from './photos.js';
 
 let cache = null, at = 0;
 export async function quickSearch(start = '') {
@@ -19,7 +20,7 @@ export async function quickSearch(start = '') {
         .filter((x) => x.score < 9).sort((a, b) => a.score - b.score || a.e.full_name.localeCompare(b.e.full_name)).slice(0, 40).map((x) => x.e);
       cur = Math.min(cur, Math.max(0, hits.length - 1));
       clear(box).append(!q ? h('div', { class: 'small muted' }, `${cache.length} employees. Start typing — Enter opens the first match.`) : hits.length ? hits.map((e, i) => h('button', { class: 'qs-hit' + (i === cur ? ' on' : ''), onClick: () => go(e) },
-        h('span', { class: 'avatar sm' }, initials(e.full_name)), h('span', { class: 'mono qs-code' }, e.employee_code || ''), h('span', { class: 'grow' }, h('b', null, e.full_name), h('span', { class: 'small muted' }, ` · ${e.default_project || 'no project'}${e.ni_number ? ' · ' + e.ni_number : ''}`)), waButton(e), typeChip(e.employment_type), statusChip(e.emp_status)))
+        avatar(e, 'sm'), h('span', { class: 'mono qs-code' }, e.employee_code || ''), h('span', { class: 'grow' }, h('b', null, e.full_name), h('span', { class: 'small muted' }, ` · ${e.default_project || 'no project'}${e.ni_number ? ' · ' + e.ni_number : ''}`)), waButton(e), typeChip(e.employment_type), statusChip(e.emp_status)))
         : h('div', { class: 'small muted' }, 'No match.'));
     };
     inp.addEventListener('input', debounce(() => { cur = 0; draw(); }, 80));

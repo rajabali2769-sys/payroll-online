@@ -7,6 +7,8 @@ import { normKey } from './parsers.js';
 import { openEscalate, pocFor, summarise } from './escalate.js';
 import { go } from './app.js';
 import { openLineDrawer } from './line-drawer.js';
+import { overview } from './overview.js';
+import { panel } from './panels.js';
 
 const num = (v) => +v || 0;
 const who = (email) => (email ? email.split('@')[0] : 'someone');
@@ -77,10 +79,11 @@ export async function render(root) {
   const onDoc = (e) => { if (!e.target.closest || !e.target.closest('.searchbox')) closeResults(); };
   document.addEventListener('click', onDoc);
 
-  root.append(
+  const ovHost = h('div');
+  root.append(ovHost, panel('Charts, budgets & widgets', h('div', null,
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Dashboard'), h('p', null, 'Where this pay run stands, what needs a look, and one click into the detail.')), h('div', { class: 'row' }, h('button', { class: 'btn', onClick: () => customise() }, icon('gear'), 'Customise'), runPicker(() => load()))),
     h('div', { class: 'searchbox', style: { marginBottom: '14px' } }, h('span', { class: 'sglass' }, icon('search')), input, results),
-    body);
+    body), { id: 'dash.more', sub: ' · pay dates, projects over budget, trends and the rest of the dashboard' }));
 
   // ---------- maths for the page ----------
   function analyse() {
@@ -490,6 +493,8 @@ export async function render(root) {
     if (vis.includes('board_top')) { [S.daily, S.leaveRows] = await Promise.all([loadDailyForRun(S.run.id).catch(() => []), loadRunLeave(S.run.id).catch(() => [])]); }
     if (vis.includes('compare')) await cmpLoad();
     paint();
+    S.ov = S.ov || {};
+    try { clear(ovHost).append(overview({ run: S.run, lines: S.lines, periods: S.periods, adhoc: S.adhoc, onReload: () => softReload(), state: S.ov, picker: runPicker(() => { location.reload(); }) })); } catch (e) { console.error(e); }
   }
   const softReload = debounce(() => load().catch(console.error), 700);
 

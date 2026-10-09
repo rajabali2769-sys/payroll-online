@@ -8,6 +8,7 @@ import { panel, panelGrid, expandAllBtn } from './panels.js';
 import { importModal, exportRows } from './importer.js';
 import { coverStarterSpec, assignmentSpec, hoursSpec, finder } from './specs.js';
 import { waButton } from './whatsapp.js';
+import { avatar } from './photos.js';
 
 const fld = (label, el, cls) => h('label', { class: 'fld' + (cls ? ' ' + cls : '') }, label, el);
 const TABS = [['queue', 'New starters'], ['add', 'Add a cover'], ['assign', 'Who is covering whom'], ['hours', 'Cover hours']];
@@ -32,7 +33,7 @@ export async function render(root, params) {
     const map = byId();
     const card = (e) => { const cov = assigns.filter((a) => a.cover_employee_id === e.id);
       return h('div', { class: 'nscard' + (e.payroll_state === 'pending' ? ' pending' : '') },
-        h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'avatar sm' }, initials(e.full_name)), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), waButton(e), typeChip(e.employment_type)),
+        h('div', { class: 'row', style: { gap: '8px' } }, avatar(e, 'sm'), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), waButton(e), typeChip(e.employment_type)),
         h('div', { class: 'nsfacts' }, [['£/h', e.default_rate != null ? money(e.default_rate) : '—'], ['Pay date', e.pay_group || '—'], ['Weekly hrs', e.weekly_hours != null ? hrs(e.weekly_hours) : '—'], ['Weekly pay', money(weeklyPay(e))], ['Starts', dmy(e.hire_date) || '—'], ['Shift', shiftText(e) || '—']].map(([l, v]) => h('div', null, h('span', null, l), h('b', null, String(v))))),
         cov.length ? h('div', { class: 'small covfor' }, h('b', null, 'Covering for: '), cov.map((a) => `${(map.get(a.absent_employee_id) || {}).full_name || a.absent_name || '—'} (${a.reason.toLowerCase()})`).join(', ')) : isCover(e) ? h('div', { class: 'small muted' }, 'Not linked to anyone yet.') : null,
         h('div', { class: 'row small', style: { gap: '6px' } }, h('span', { class: 'muted' }, 'RTW'), rtwChip(e.rtw_expiry), h('div', { class: 'grow' }), h('span', { class: 'muted', title: e.added_by_email || '' }, e.payroll_added_at ? `Added to payroll ${ago(e.payroll_added_at)}` : `Sent ${ago(e.created_at)}${e.added_by_email ? ' by ' + e.added_by_email.split('@')[0] : ''}`)),
