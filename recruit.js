@@ -15,7 +15,7 @@ const TABS = [['queue', 'New starters'], ['add', 'Add a cover'], ['assign', 'Who
 
 export async function render(root, params) {
   const canAdd = ctx.can('recruit_add'), canMove = ctx.can('move_to_payroll') && ctx.canEdit;
-  let staff = [], projects = [], assigns = [], hoursRows = [], tab = (params && params.tab) || 'queue', q = '', qtab = 'pending', week = mondayOf(today()), editing = null;
+  let picked = new Set(); let staff = [], projects = [], assigns = [], hoursRows = [], tab = (params && params.tab) || 'queue', q = '', qtab = 'pending', week = mondayOf(today()), editing = null;
   const bar = h('div', { class: 'tabs big row' }), host = h('div', { class: 'ns-host' });
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'New starters & covers'), h('p', null, canMove ? 'Recruitment adds covers, who they replace and their hours. Check them, add new starters to the payroll and send cover hours across.' : 'Add temporary / cover staff, say who they are covering, and record their hours. The payroll team sees everything straight away.'))),
     bar, host);
@@ -32,8 +32,8 @@ export async function render(root, params) {
     const list = G[qtab].filter((e) => !q || [e.employee_code, e.full_name, e.default_project, e.ni_number, e.email].some((x) => x && x.toLowerCase().includes(q)));
     const map = byId();
     const card = (e) => { const cov = assigns.filter((a) => a.cover_employee_id === e.id);
-      return h('div', { class: 'nscard' + (e.payroll_state === 'pending' ? ' pending' : '') },
-        h('div', { class: 'row', style: { gap: '8px' } }, avatar(e, 'sm'), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), waButton(e), typeChip(e.employment_type)),
+      return h('div', { class: 'nscard' + (e.payroll_state === 'pending' ? ' pending' : '') + (picked.has(e.id) ? ' picked' : '') },
+        h('div', { class: 'row', style: { gap: '8px' } }, canMove && e.payroll_state === 'pending' ? h('input', { type: 'checkbox', checked: picked.has(e.id), title: 'Select for “Add selected to payroll”', onChange: (ev) => { ev.target.checked ? picked.add(e.id) : picked.delete(e.id); draw(); } }) : null, avatar(e, 'sm'), h('div', { class: 'grow', style: { minWidth: 0 } }, h('b', { class: 'ell' }, e.full_name), h('div', { class: 'small muted ell' }, `${e.employee_code || ''} · ${e.default_project || '—'}`)), waButton(e), typeChip(e.employment_type)),
         h('div', { class: 'nsfacts' }, [['£/h', e.default_rate != null ? money(e.default_rate) : '—'], ['Pay date', e.pay_group || '—'], ['Weekly hrs', e.weekly_hours != null ? hrs(e.weekly_hours) : '—'], ['Weekly pay', money(weeklyPay(e))], ['Starts', dmy(e.hire_date) || '—'], ['Shift', shiftText(e) || '—']].map(([l, v]) => h('div', null, h('span', null, l), h('b', null, String(v))))),
         cov.length ? h('div', { class: 'small covfor' }, h('b', null, 'Covering for: '), cov.map((a) => `${(map.get(a.absent_employee_id) || {}).full_name || a.absent_name || '—'} (${a.reason.toLowerCase()})`).join(', ')) : isCover(e) ? h('div', { class: 'small muted' }, 'Not linked to anyone yet.') : null,
         h('div', { class: 'row small', style: { gap: '6px' } }, h('span', { class: 'muted' }, 'RTW'), rtwChip(e.rtw_expiry), h('div', { class: 'grow' }), h('span', { class: 'muted', title: e.added_by_email || '' }, e.payroll_added_at ? `Added to payroll ${ago(e.payroll_added_at)}` : `Sent ${ago(e.created_at)}${e.added_by_email ? ' by ' + e.added_by_email.split('@')[0] : ''}`)),
@@ -42,6 +42,8 @@ export async function render(root, params) {
           canMove ? h('button', { class: 'btn sm primary', onClick: () => moveModal(e) }, icon('plus'), 'Add to payroll') : h('span', { class: 'small muted' }, 'Waiting for payroll')) : null); };
     return h('div', { class: 'ns-pane' },
       h('div', { class: 'toolbar tight' }, h('div', { class: 'seg big' }, [['pending', 'Waiting for payroll'], ['added', 'Added to payroll'], ['mine', 'Added by me']].map(([k, t]) => h('button', { class: qtab === k ? 'on' : '', onClick: () => { qtab = k; draw(); } }, t, ' ', h('span', { class: 'cnt' }, String(G[k].length))))),
+        canMove && qtab === 'pending' && G.pending.length ? h('label', { class: 'row small', style: { gap: '4px' } }, h('input', { type: 'checkbox', checked: G.pending.length && G.pending.every((e) => picked.has(e.id)), onChange: (ev) => { G.pending.forEach((e) => (ev.target.checked ? picked.add(e.id) : picked.delete(e.id))); draw(); } }), 'Select all') : null,
+        canMove && picked.size ? h('button', { class: 'btn sm primary', onClick: () => bulkMove(staff.filter((e) => picked.has(e.id) && e.payroll_state === 'pending')) }, icon('plus'), `Add ${picked.size} selected to payroll`) : null,
         h('div', { class: 'grow' }), canAdd ? h('button', { class: 'btn sm', onClick: () => importModal(coverStarterSpec(async (rows) => { const r = await importStaff(rows.map((x) => ({ ...x, employment_type: x.employment_type || 'cover', payroll_state: 'pending', emp_status: 'active', default_contract: 'Cover' }))); await load(); return `${r.created} added with new Employee IDs, ${r.updated} updated`; })) }, icon('upload'), 'Upload covers') : null,
         h('button', { class: 'btn sm', onClick: () => exportRows(coverStarterSpec(null), G[qtab], 'new_starters.xlsx').catch((er) => toast(er.message, 'err')) }, icon('download'), 'Export'),
         h('input', { type: 'search', placeholder: 'Search ID, name…', value: q, style: { width: '200px' }, onInput: debounce((ev) => { q = ev.target.value.toLowerCase(); draw(); }, 150) })),
@@ -76,6 +78,30 @@ export async function render(root, params) {
             done(); toast(res.existed ? 'Already had a line in that payroll — marked as added' : `Added to ${r.label}`, 'ok'); await load();
           } catch (er) { ev.target.disabled = false; toast(er.message, 'err'); }
         } }, 'Add to payroll')));
+    }, { wide: true });
+  }
+
+  function bulkMove(list) {
+    const runs = openRuns(); if (!runs.length) return toast('There is no open payroll. Open one first (All payrolls → New payroll).', 'err');
+    const def = currentRuns()[0] || runs[0];
+    modal(`Add ${list.length} people to a payroll`, (done) => {
+      const runSel = h('select', null, runs.map((r) => h('option', { value: r.id, selected: r.id === def.id }, `${r.stream === 'monthly' ? 'Monthly' : 'Fortnightly'} · ${runLabel(r)}`)));
+      const sendH = h('input', { type: 'checkbox', checked: true }), prog = h('div', { class: 'small muted' });
+      const grp = (e) => e.pay_group || ((projects.find((p) => p.name && e.default_project && p.name.toLowerCase() === e.default_project.toLowerCase()) || {}).pay_group) || null;
+      return h('div', { class: 'stack' }, h('label', { class: 'fld' }, 'Payroll', runSel),
+        h('div', { class: 'tablewrap', style: { maxHeight: '40vh' } }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Employee', 'Project', 'Pay date', '£/h', 'Starts', 'Hours to send'].map((t) => h('th', null, t)))),
+          h('tbody', null, list.map((e) => { const un = hoursRows.filter((x) => x.cover_employee_id === e.id && !x.synced_at); return h('tr', null, h('td', null, h('b', null, e.full_name), h('div', { class: 'small muted' }, e.employee_code || '')), h('td', { class: 'small' }, e.default_project || h('span', { class: 'neg' }, 'no project')), h('td', null, grp(e) || '—'), h('td', null, money(e.default_rate)), h('td', { class: 'small' }, dmy(e.hire_date) || '—'), h('td', { class: 'num' }, un.length ? `${hrs(un.reduce((a, x) => a + +x.hours, 0))} h` : '—')); })))),
+        h('label', { class: 'row small' }, sendH, 'Also send their cover hours into this payroll'), prog,
+        h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async (ev) => {
+          const btn = ev.currentTarget; btn.disabled = true; const r = runs.find((x) => x.id === runSel.value); let ok = 0; const fail = [];
+          for (const e of list) {
+            prog.textContent = `Adding ${ok + fail.length + 1} of ${list.length}: ${e.full_name}…`;
+            try { if (!e.default_project || e.default_rate == null) throw new Error('needs a project and rate'); await moveToPayroll(e, r, { pay_group: grp(e) });
+              const un = hoursRows.filter((x) => x.cover_employee_id === e.id && !x.synced_at && (!r.period_end || String(x.work_date) <= r.period_end)); if (sendH.checked && un.length) await syncCoverHours(r, { ...e, payroll_state: 'in_payroll' }, un, grp(e)); ok++; }
+            catch (er) { fail.push(`${e.full_name} (${er.message})`); }
+          }
+          picked.clear(); done(); toast(`${ok} added to ${r.label}${fail.length ? ` · ${fail.length} not added: ${fail.slice(0, 4).join('; ')}` : ''}`, fail.length ? 'err' : 'ok'); await load();
+        } }, `Add ${list.length} to payroll`)));
     }, { wide: true });
   }
 

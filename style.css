@@ -702,3 +702,46 @@ table.calt td { padding: 5px 8px; } table.calt tr.past td { opacity: .62; } .cal
 a.ktile { text-decoration: none !important; color: inherit; }
 .cmpbar i { background: linear-gradient(90deg, #7c5cff, #2563eb); } .cmpbar i.b-perm { background: #3b82f6; border-radius: 0; } .cmpbar i.b-cover { background: #c026d3; border-radius: 0; }
 .kstrip { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+/* =====================================================================================
+   v4.9  more colour: rich menu, tinted page, coloured section headers, coloured figures
+   ===================================================================================== */
+body { background: linear-gradient(160deg, #f3f0ff 0%, #eef5ff 45%, #f0fbf7 100%) fixed !important; }
+.side { background: linear-gradient(185deg, #2e1f73 0%, #3b2a8c 38%, #1e3a8a 100%) !important; color: #e6e8ff; border-right: 0; }
+.side .brand, .side .brand b, .side h1, .side .brand span { color: #fff !important; }
+.side .nav a { color: #d9dcff; } .side .nav a svg { color: #a9b0ff; }
+.side .nav a:hover { background: rgba(255,255,255,.10); color: #fff; }
+.side .nav a.active { background: #fff; color: #3b2a8c; box-shadow: 0 6px 18px rgba(10,10,60,.25); } .side .nav a.active svg { color: #6c5ce7; }
+.navgrp > .grp { color: #a9b0ff !important; } .navgrp > .grp:hover { color: #fff !important; }
+.side .navsearch { background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.18); color: #e6e8ff; } .side .navsearch:hover { background: rgba(255,255,255,.18); color: #fff; } .side .navsearch kbd { background: rgba(255,255,255,.18); color: #fff; }
+.side .me { color: #c7cbff !important; border-top-color: rgba(255,255,255,.15) !important; } .side .me b { color: #fff !important; }
+.side .btn { background: rgba(255,255,255,.12) !important; border-color: rgba(255,255,255,.22) !important; color: #fff !important; }
+.side .curbox { background: rgba(255,255,255,.10) !important; border-color: rgba(255,255,255,.16) !important; } .side .curbox, .side .curbox * { color: #eef0ff; } .side .curbox .grp { color: #a9b0ff !important; }
+.side .curlink { color: #c7cbff !important; } .side .curlink:hover { color: #fff !important; }
+.side::-webkit-scrollbar-thumb { background: rgba(255,255,255,.3); } .side { scrollbar-color: rgba(255,255,255,.3) transparent; }
+.page-head h1 { background: linear-gradient(90deg, #5b3fd6, #2563eb 60%, #0ea5e9); -webkit-background-clip: text; background-clip: text; color: transparent !important; }
+/* section headers: each one gets its own colour */
+.hrstack > .panel, .main .panel.dsec { border-left: 4px solid var(--pc, #7c5cff); }
+.hrstack > .panel:nth-child(6n+1), .dsec:nth-of-type(6n+1) { --pc: #7c5cff; --pt: #f4f0ff; }
+.hrstack > .panel:nth-child(6n+2), .dsec:nth-of-type(6n+2) { --pc: #2563eb; --pt: #eef4ff; }
+.hrstack > .panel:nth-child(6n+3), .dsec:nth-of-type(6n+3) { --pc: #0d9488; --pt: #ecfbf7; }
+.hrstack > .panel:nth-child(6n+4), .dsec:nth-of-type(6n+4) { --pc: #d97706; --pt: #fff7e8; }
+.hrstack > .panel:nth-child(6n+5), .dsec:nth-of-type(6n+5) { --pc: #db2777; --pt: #fff0f6; }
+.hrstack > .panel:nth-child(6n+6), .dsec:nth-of-type(6n+6) { --pc: #0284c7; --pt: #ecf8ff; }
+.panel > .phd { background: linear-gradient(90deg, var(--pt, #f4f0ff), #fff 70%); border-radius: 12px 12px 0 0; }
+.panel.closed > .phd { border-radius: 12px; }
+.panel > .phd .ptitle b { color: #1e1b4b; } .panel > .phd .picon { background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.06); color: var(--pc, #6c5ce7); }
+/* tables */
+table.t th { background: linear-gradient(180deg, #f3f0ff, #ece8ff); color: #4c3fb0; }
+table.t tbody tr:nth-child(even) td { background: #fbfaff; }
+/* figures */
+.ktile { background: linear-gradient(135deg, #fff 30%, var(--kbg, #f4f0ff) 100%); border-color: transparent; box-shadow: 0 4px 14px rgba(40,30,120,.08); }
+.kc-teal { --kc: #0d9488; --kbg: #d9f7f1; } .kc-blue { --kc: #2563eb; --kbg: #dde9ff; } .kc-violet { --kc: #7c3aed; --kbg: #ece3ff; } .kc-amber { --kc: #d97706; --kbg: #ffefcf; }
+.kc-slate { --kc: #475569; --kbg: #e6eaf2; } .kc-red { --kc: #dc2626; --kbg: #ffe0e0; } .kc-pink { --kc: #db2777; --kbg: #ffe0ef; } .kc-green { --kc: #059669; --kbg: #d8f7e8; }
+.ktile .kv { color: var(--kc); }
+.card { box-shadow: 0 4px 16px rgba(40,30,120,.06); }
+.btn { border-color: #dcd6ff; } .btn:hover { border-color: #b9adff; background: #faf8ff; }
+.btn.primary { background: linear-gradient(135deg, #6d4dff, #2563eb) !important; color: #fff !important; border: 0; }
+.ov-list, .pcard { box-shadow: 0 6px 20px rgba(40,30,120,.08); }
+.nscard.picked { border-color: #7c5cff; box-shadow: 0 0 0 3px #ece8ff; }
+.nr-opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid #e3defd; border-radius: 12px; padding: 10px 12px; cursor: pointer; background: #fbfaff; } .nr-opt:has(input:checked) { border-color: #7c5cff; background: #f4f0ff; }

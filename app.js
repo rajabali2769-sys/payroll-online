@@ -110,7 +110,7 @@ function paintCurrent() {
     cur.length ? cur.map((r) => h('a', { class: 'curitem', href: '#/dashboard', title: r.label, onClick: () => { setRun(r.id); } },
         h('b', null, r.label), h('div', { class: 'curmeta' }, h('span', null, r.stream === 'monthly' ? 'Monthly' : 'Fortnightly'), h('span', { class: 'cstat st-' + r.status }, r.status === 'ready' ? 'Open' : r.status === 'approved' ? 'Approved' : r.status))))
       : h('div', { class: 'curitem muted' }, 'No open payroll'),
-    h('a', { href: '#/payrolls', class: 'curlink' }, 'Open & previous payrolls →'));
+    h('a', { href: '#/payrolls', class: 'curlink' }, 'Open & previous payrolls →'), ctx.canEdit ? h('a', { href: '#', class: 'curlink', onClick: (e) => { e.preventDefault(); import('./newrun.js').then((m) => m.newRunModal()); } }, '+ New payroll') : null);
 }
 export const refreshCurrentBox = paintCurrent;
 

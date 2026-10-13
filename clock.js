@@ -3,13 +3,19 @@ import { loadShifts, loadOpenClockIns, addClockShift, addClockEvent, updateClock
 import { h, clear, toast, modal, icon, dmy, dm, hrs, debounce, initials, addDays, mondayOf, natCompare, confirmBox } from './ui.js';
 import { ctx, openRuns, currentRuns } from './ctx.js';
 import { panel, expandAllBtn } from './panels.js';
-import { exportRows } from './importer.js';
+import { exportRows, importModal } from './importer.js';
+import { finder } from './specs.js';
 import { waButton } from './whatsapp.js';
 import { today, empLabel } from './hrkit.js';
 
 const tm = (iso) => (iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' }) : '—');
 const fld = (label, el, cls) => h('label', { class: 'fld' + (cls ? ' ' + cls : '') }, label, el);
-const localDT = (iso) => { if (!iso) return ''; const d = new Date(iso); const off = d.getTimezoneOffset(); return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16); };
+// all clock times are UK times, whatever time zone the computer is in
+const LON = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const londonParts = (d) => { const p = Object.fromEntries(LON.formatToParts(d).map((x) => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`; };
+const localDT = (iso) => (iso ? londonParts(new Date(iso)) : '');
+// "2026-10-07T06:00" (UK wall time) → exact moment
+function ukToDate(wall) { const [d, t] = wall.split('T'); const [y, m, dd] = d.split('-').map(Number); const [hh, mi] = t.split(':').map(Number); let guess = Date.UTC(y, m - 1, dd, hh, mi); for (let i = 0; i < 2; i++) { const seen = londonParts(new Date(guess)); const [sd, st] = seen.split('T'); const [sy, sm, sdd] = sd.split('-').map(Number); const [sh, smi] = st.split(':').map(Number); guess += Date.UTC(y, m - 1, dd, hh, mi) - Date.UTC(sy, sm - 1, sdd, sh, smi); } return new Date(guess); }
 
 export async function render(root) {
   const canFix = ctx.can('manage_clock') || ctx.canEdit, canSend = ctx.canEdit;
@@ -19,7 +25,7 @@ export async function render(root) {
   const fromI = h('input', { type: 'date', value: from, onChange: (e) => { from = e.target.value; load(); } }), toI = h('input', { type: 'date', value: to, onChange: (e) => { to = e.target.value; load(); } });
   const stack = h('div', { class: 'hrstack' },
     panel(h('span', null, 'On site now ', nowSub), nowBody, { id: 'clk.now' }),
-    panel(h('span', null, 'Shifts ', shSub), shBody, { id: 'clk.shifts', actions: h('div', { class: 'row', style: { gap: '6px' } }, canFix ? h('button', { class: 'btn sm', onClick: () => shiftModal() }, icon('plus'), 'Add shift') : null, h('button', { class: 'btn sm', onClick: doExport }, icon('download'), 'Export')) }),
+    panel(h('span', null, 'Shifts ', shSub), shBody, { id: 'clk.shifts', actions: h('div', { class: 'row', style: { gap: '6px' } }, canFix ? h('button', { class: 'btn sm', onClick: (e) => { e.stopPropagation(); uploadClock(); } }, icon('upload'), 'Upload clock-ins') : null, canFix ? h('button', { class: 'btn sm', onClick: () => shiftModal() }, icon('plus'), 'Add shift') : null, h('button', { class: 'btn sm', onClick: doExport }, icon('download'), 'Export')) }),
     canSend ? panel(h('span', null, 'Send to payroll ', sendSub), sendBody, { id: 'clk.send' }) : null,
     panel('Site locations', locBody, { id: 'clk.loc', sub: ' · optional: check that people clock in on site' }),
     panel('How employees clock in', h('div', { class: 'small', style: { lineHeight: 1.7 } },
@@ -89,7 +95,7 @@ export async function render(root) {
         h('div', { class: 'row', style: { justifyContent: 'space-between' } },
           !isNew ? h('button', { class: 'btn danger', onClick: async () => { if (await confirmBox('Delete this shift?', 'The clock-in and clock-out are removed.', 'Delete', true)) { try { await deleteClockEvent(s.in_id); if (s.out_id) await deleteClockEvent(s.out_id); done(); toast('Deleted', 'ok'); load(); } catch (er) { toast(er.message, 'err'); } } } }, icon('trash')) : h('span'),
           h('div', { class: 'row' }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async () => {
-            const ti = tin.value ? new Date(tin.value).toISOString() : null, to2 = tout.value ? new Date(tout.value).toISOString() : null;
+            const ti = tin.value ? ukToDate(tin.value).toISOString() : null, to2 = tout.value ? ukToDate(tout.value).toISOString() : null;
             if (!ti) return toast('Add the clock-in time', 'err'); if (to2 && to2 <= ti) return toast('Clock-out must be after clock-in', 'err'); if (to2 && Date.parse(to2) - Date.parse(ti) > 18 * 3600000) return toast('A shift cannot be longer than 18 hours', 'err');
             try {
               if (isNew) { const e = staff.find((x) => empLabel(x) === who.value) || staff.find((x) => x.employee_code && x.employee_code.toLowerCase() === who.value.trim().toLowerCase()); if (!e) return toast('Pick the employee from the list', 'err'); await addClockShift({ employee_id: e.id, project_name: proj.value.trim() || e.default_project, clock_in: ti, clock_out: to2, note: note.value.trim() }); }
@@ -102,6 +108,40 @@ export async function render(root) {
             } catch (er) { toast(er.message, 'err'); }
           } }, 'Save'))));
     }, { wide: true });
+  }
+
+  // upload clock-ins / clock-outs from a clocking system or spreadsheet
+  function uploadClock() {
+    importModal({
+      title: 'Upload clock-in / clock-out data', file: 'clock_template.xlsx', note: 'One row per shift. If the clock-out time is earlier than the clock-in time, it is taken as the next day (night shift).',
+      help: ['One row per shift: who, the date, clock-in time and clock-out time.', 'Use the Employee ID where you can — names work too.', 'Rows already in the system (same person, same clock-in time) are skipped, so you can upload the same file again safely.'],
+      columns: [
+        { key: 'who', label: 'Employee ID or name', required: true, example: 'CFM00012', aliases: ['employee', 'employee name', 'name', 'employee id', 'staff id'] },
+        { key: 'date', label: 'Date', type: 'date', required: true, example: '06/10/2026', aliases: ['shift date', 'work date', 'day'] },
+        { key: 'in', label: 'Clock in', type: 'time', required: true, example: '06:00', aliases: ['in', 'time in', 'start', 'clock in time'] },
+        { key: 'out', label: 'Clock out', type: 'time', example: '09:00', aliases: ['out', 'time out', 'finish', 'end', 'clock out time'] },
+        { key: 'project', label: 'Project', example: 'NHS Cornwall', aliases: ['site'] },
+        { key: 'note', label: 'Note' },
+      ],
+      save: async (rows) => {
+        const fnd = finder(staff), dates = rows.map((r) => r.date).sort();
+        const have = await loadShifts(dates[0], dates[dates.length - 1]).catch(() => []);
+        const seen = new Set(have.map((x) => x.employee_id + '|' + Math.round(Date.parse(x.clock_in) / 60000)));
+        const evs = [], miss = []; let skip = 0;
+        for (const r of rows) {
+          const e = fnd(r.who); if (!e) { miss.push(r.who); continue; }
+          const ti = ukToDate(`${r.date}T${r.in}`); if (isNaN(ti)) { miss.push(r.who); continue; }
+          const k = e.id + '|' + Math.round(ti.getTime() / 60000); if (seen.has(k)) { skip++; continue; } seen.add(k);
+          const project = r.project || e.default_project || null;
+          evs.push({ employee_id: e.id, kind: 'in', at: ti.toISOString(), project_name: project, note: r.note || null, source: 'import' });
+          if (r.out) { let to = ukToDate(`${r.date}T${r.out}`); if (to <= ti) to = new Date(to.getTime() + 864e5); if (to - ti <= 18 * 3600000) evs.push({ employee_id: e.id, kind: 'out', at: to.toISOString(), project_name: project, note: r.note || null, source: 'import' }); }
+        }
+        for (let i = 0; i < evs.length; i += 500) await addClockEvent(evs.slice(i, i + 500));
+        if (dates[0] < from || dates[dates.length - 1] > to) { from = dates[0] < from ? dates[0] : from; to = dates[dates.length - 1] > to ? dates[dates.length - 1] : to; fromI.value = from; toI.value = to; }
+        await load();
+        return `${evs.filter((x) => x.kind === 'in').length} shift(s) added${skip ? ` · ${skip} already there` : ''}${miss.length ? ` · ${miss.length} skipped (employee not found): ${[...new Set(miss)].slice(0, 6).join(', ')}` : ''}`;
+      },
+    });
   }
 
   function doExport() {

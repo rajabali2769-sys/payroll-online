@@ -3,11 +3,12 @@ import { loadAllSummaries, onLive } from './api.js';
 import { h, clear, money, dmy, ago, debounce, natCompare } from './ui.js';
 import { ctx, openRuns, previousRuns, currentRuns, setRun } from './ctx.js';
 import { go } from './app.js';
+import { newRunButton } from './newrun.js';
 
 export async function render(root) {
   let sum = new Map(), stream = '', q = '';
   const host = h('div');
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'All payrolls'), h('p', null, 'What is open right now, and what has been locked. Locked payrolls can still be viewed — nobody can change them.'))), host);
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'All payrolls'), h('p', null, 'What is open right now, and what has been locked. Open a new payroll here — no Excel needed.')), h('div', { class: 'row' }, newRunButton())), host);
   async function load() {
     const rows = await loadAllSummaries().catch(() => []); sum = new Map();
     for (const r of rows) { const s = sum.get(r.run_id) || { gross: 0, lines: 0, over: 0, under: 0, budget: 0 }; s.gross += +r.gross || 0; s.lines += +r.lines || 0; s.over += +r.over_lines || 0; s.under += +r.under_lines || 0; s.budget += +r.budgeted || 0; sum.set(r.run_id, s); }

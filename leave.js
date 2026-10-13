@@ -3,13 +3,19 @@ import { loadRunLeave, onLive, deleteLeave } from './api.js';
 import { h, clear, money, hrs, dmy, debounce, natCompare, toast, downloadCSV, icon, donut } from './ui.js';
 import { ctx, currentRun, runPicker, runEditable, payRules } from './ctx.js';
 import { openLineDrawer } from './line-drawer.js';
+import { leaveRequestsPanel, bulkLeaveButton } from './leaveadmin.js';
 
 export async function render(root) {
   const run = currentRun();
-  if (!run) { root.append(h('div', { class: 'card empty' }, 'Import a file first.')); return; }
+  const reqHost = h('div', { style: { marginBottom: '14px' } });
+  let reqPanel = null;
+  leaveRequestsPanel({ onChange: () => { if (run) loadRunLeave(run.id).then((r) => { rows = r; draw(); }).catch(() => {}); } }).then((p) => { reqPanel = p; reqHost.append(p); }).catch((e) => reqHost.append(h('div', { class: 'notice err' }, e.message)));
+  if (!run) { root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Leave & SSP'))), reqHost, h('div', { class: 'card empty' }, 'Open or create a payroll to record leave on it.')); return () => reqPanel && reqPanel.stop && reqPanel.stop(); }
   let rows = [], type = '', q = '';
   const host = h('div');
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Leave & SSP'), h('p', null, 'Annual leave, bank holidays and sick leave — paid, unpaid or Statutory Sick Pay. Add leave from an employee’s line in Payroll.')), runPicker(() => location.reload())), host);
+  const bulkHost = h('span');
+  if (runEditable(run.id)) bulkLeaveButton(run, () => loadRunLeave(run.id).then((r) => { rows = r; draw(); })).then((b) => bulkHost.append(b));
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Leave & SSP'), h('p', null, 'Leave requests from the My Pay app, and every leave / SSP day in this payroll. Upload many at once with “Upload leave & SSP”.')), h('div', { class: 'row wrap' }, bulkHost, runPicker(() => location.reload()))), reqHost, host);
 
   function draw() {
     const rules = payRules(), perDay = rules.ssp_weekly_rate / rules.ssp_days;
@@ -37,5 +43,6 @@ export async function render(root) {
   }
   async function load() { try { rows = await loadRunLeave(run.id); } catch (e) { rows = []; toast(e.message, 'err'); } draw(); }
   await load();
-  return onLive(debounce((e) => { if (e.table === 'line_leave' || e.table === 'leave_types') load(); }, 600));
+  const stopL = onLive(debounce((e) => { if (e.table === 'line_leave' || e.table === 'leave_types') load(); }, 600));
+  return () => { stopL && stopL(); reqPanel && reqPanel.stop && reqPanel.stop(); };
 }

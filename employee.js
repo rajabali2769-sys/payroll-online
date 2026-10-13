@@ -39,8 +39,8 @@ function authScreen(note) {
 async function load() {
   const rpc = async (name, args) => { const { data, error } = await sb.rpc(name, args || {}); if (error) throw error; return data || []; };
   try {
-    const [prof, days, periods, slips, brand, lv, lvDays, clk, clkP] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {}), rpc('my_leave').catch(() => []), rpc('my_leave_days').catch(() => []), rpc('my_clock', { p_days: 14 }).catch(() => []), rpc('my_clock_projects').catch(() => [])]);
-    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, leave: lv[0] || null, leaveDays: lvDays, clock: clk, clockProjects: clkP, offline: false });
+    const [prof, days, periods, slips, brand, lv, lvDays, clk, clkP, lReq, lTypes] = await Promise.all([rpc('my_profile'), rpc('my_days', { p_days: 70 }), rpc('my_periods'), rpc('my_payslips'), sb.rpc('app_branding').then((r) => r.data || {}), rpc('my_leave').catch(() => []), rpc('my_leave_days').catch(() => []), rpc('my_clock', { p_days: 14 }).catch(() => []), rpc('my_clock_projects').catch(() => []), rpc('my_leave_requests').catch(() => []), rpc('my_leave_types').catch(() => [])]);
+    Object.assign(S, { profile: prof[0] || null, days, periods, slips, brand, leave: lv[0] || null, leaveDays: lvDays, clock: clk, clockProjects: clkP, leaveReq: lReq, leaveTypes: lTypes, offline: false });
     try { localStorage.setItem(cacheKey('data'), JSON.stringify({ profile: S.profile, days, periods, slips, brand, leave: S.leave, leaveDays: lvDays, at: Date.now() })); } catch { /* private mode */ }
   } catch (e) {
     const c = (() => { try { return JSON.parse(localStorage.getItem(cacheKey('data'))); } catch { return null; } })();
@@ -121,19 +121,46 @@ function clockView() {
     h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', { class: 'grow' }, 'Your recent shifts'), h('span', { class: 'pill' }, `This week ${hrs(weekH)} h`)),
       shifts.length ? shifts.slice(0, 20).map((x) => h('div', { class: 'day' }, h('div', { class: 'd' }, h('b', null, String(new Date(x.in.at).getDate())), h('span', null, DOW[(new Date(x.in.at).getDay() + 6) % 7])), h('div', { class: 'grow' }, h('b', null, `${tm(x.in.at)} – ${x.out ? tm(x.out.at) : 'still in'}`), h('div', { class: 'small muted' }, x.in.project_name || '')), h('div', { class: 'right' }, x.hours != null ? h('b', null, hrs(x.hours) + ' h') : h('span', { class: 'pill est' }, 'open')))) : h('div', { class: 'muted small', style: { marginTop: '8px' } }, 'No clock-ins yet.'))];
 }
+function leaveForm() {
+  const types = (S.leaveTypes || []).length ? S.leaveTypes : [{ code: 'AL', name: 'Annual leave' }];
+  const ty = h('select', { class: 'inp' }, types.map((t) => h('option', { value: t.code }, t.name.replace(/\s*\(.*\)$/, ''))));
+  const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+  const f = h('input', { type: 'date', class: 'inp', value: tomorrow }), t = h('input', { type: 'date', class: 'inp', value: tomorrow }), half = h('input', { type: 'checkbox' }), why = h('input', { type: 'text', class: 'inp', placeholder: 'Reason (optional)' });
+  const msg = h('div', { class: 'notice hidden' }), info = h('div', { class: 'small muted' });
+  const count = () => { let n = 0; for (let d = new Date(f.value + 'T00:00:00Z'); f.value && t.value && d <= new Date(t.value + 'T00:00:00Z'); d = new Date(d.getTime() + 864e5)) { const w = d.getUTCDay(); if (w && w !== 6) n++; } if (half.checked && f.value === t.value) n = n / 2; info.textContent = n ? `${n} working day(s)` + (ty.value === 'AL' && S.leave ? ` · you have ${Math.round(num(S.leave.available) * 10) / 10} day(s) available now` : '') : ''; };
+  [f, t, half, ty].forEach((el) => el.addEventListener('change', () => { if (el === f && t.value < f.value) t.value = f.value; count(); })); setTimeout(count);
+  const btn = h('button', { class: 'btn', style: { width: '100%', marginTop: '10px' }, onClick: async () => {
+    btn.disabled = true; msg.className = 'notice hidden';
+    try { const { error } = await sb.rpc('request_leave', { p_type: ty.value, p_from: f.value, p_to: t.value, p_half: half.checked, p_reason: why.value.trim() || null }); if (error) throw error;
+      S.leaveReq = (await sb.rpc('my_leave_requests')).data || S.leaveReq; draw(); const m2 = document.querySelector('#leavemsg'); if (m2) { m2.textContent = 'Request sent — you will see here when it is approved.'; m2.className = 'notice ok'; } }
+    catch (e) { msg.textContent = e.message || String(e); msg.className = 'notice err'; btn.disabled = false; }
+  } }, 'Send leave request');
+  return h('div', { class: 'card' }, h('b', null, 'Ask for leave'), h('div', { id: 'leavemsg', class: 'notice hidden' }), msg,
+    h('label', null, 'Type'), ty, h('div', { class: 'row', style: { gap: '8px' } }, h('div', { class: 'grow' }, h('label', null, 'From'), f), h('div', { class: 'grow' }, h('label', null, 'To'), t)),
+    h('label', { class: 'row small', style: { gap: '6px', marginTop: '8px' } }, half, 'Half day (one day only)'), h('label', null, 'Reason'), why, info, btn);
+}
+function requestsList() {
+  const rs = S.leaveReq || [];
+  if (!rs.length) return null;
+  const col = { pending: ['Waiting', '#b45309', '#fff4dd'], approved: ['Approved', '#15803d', '#dcfce7'], rejected: ['Not approved', '#be123c', '#ffe4e6'], cancelled: ['Cancelled', '#64748b', '#eef1f6'] };
+  return h('div', { class: 'card' }, h('b', null, 'My leave requests'),
+    rs.slice(0, 30).map((r) => { const [t, c, bg] = col[r.status] || [r.status, '#333', '#eee'];
+      return h('div', { class: 'day' }, h('div', { class: 'grow' }, h('b', null, `${dmy(r.date_from)}${r.date_to !== r.date_from ? ' – ' + dmy(r.date_to) : ''}`), h('div', { class: 'small muted' }, `${r.type_name} · ${r.days} day(s)${r.reason ? ' · ' + r.reason : ''}`), r.decision_note ? h('div', { class: 'small' }, '“' + r.decision_note + '”') : null),
+        h('div', { class: 'right' }, h('span', { class: 'pill', style: { background: bg, color: c } }, t), r.status === 'pending' ? h('div', null, h('a', { href: '#', class: 'small', onClick: async (e) => { e.preventDefault(); const { error } = await sb.rpc('cancel_leave_request', { p_id: r.id }); if (!error) { S.leaveReq = (await sb.rpc('my_leave_requests')).data || []; draw(); } } }, 'Cancel')) : null)); }));
+}
 function leaveView() {
   const L = S.leave, r = (n) => String(Math.round(num(n) * 100) / 100);
-  if (!L) return h('div', { class: 'card muted' }, 'Your leave record is not available yet. Please ask HR.');
+  if (!L) return [leaveForm(), requestsList(), h('div', { class: 'card muted' }, 'Your leave balance is not available yet. Please ask HR.')].filter(Boolean);
   const pct = Math.max(0, Math.min(100, (num(L.taken) + num(L.booked)) / Math.max(num(L.entitlement), 0.01) * 100));
   const tile = (l, v, sub) => h('div', { style: { flex: '1', background: '#f6f7fd', borderRadius: '12px', padding: '10px' } }, h('div', { class: 'small muted' }, l), h('div', { style: { fontSize: '22px', fontWeight: 800 } }, v), sub ? h('div', { class: 'small muted' }, sub) : null);
   const byType = new Map(); for (const d of S.leaveDays || []) { const k = d.type_name; byType.set(k, (byType.get(k) || 0) + 1); }
-  return [h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', { class: 'grow' }, 'Annual leave'), h('span', { class: 'pill' }, `${dmy(L.year_start)} – ${dmy(L.year_end)}`)),
+  return [leaveForm(), requestsList(), h('div', { class: 'card' }, h('div', { class: 'row' }, h('b', { class: 'grow' }, 'Annual leave'), h('span', { class: 'pill' }, `${dmy(L.year_start)} – ${dmy(L.year_end)}`)),
       h('div', { class: 'row', style: { marginTop: '12px', alignItems: 'flex-end' } }, h('div', { class: 'grow' }, h('div', { class: 'small muted' }, 'Available now'), h('div', { class: 'big' }, r(L.available) + ' days')), h('div', { class: 'right' }, h('div', { class: 'small muted' }, 'Left this year'), h('div', { style: { fontSize: '22px', fontWeight: 800 } }, r(L.remaining)))),
       h('div', { class: 'bar', style: { margin: '12px 0 6px' } }, h('i', { style: { width: pct + '%' } })),
       h('div', { class: 'row', style: { gap: '8px', marginTop: '10px' } }, tile('This year', r(L.entitlement)), tile('Built up', r(L.accrued), `${r(L.per_month)} a month`), tile('Taken', r(L.taken), num(L.booked) ? `+${r(L.booked)} booked` : null)),
       h('div', { class: 'small muted', style: { marginTop: '10px' } }, `Leave builds up every month you work${L.hire_date ? ', from ' + dmy(L.hire_date) : ''}. Ask your manager or HR to book leave.${L.employee_code ? ' Your employee ID: ' + L.employee_code : ''}`)),
     byType.size ? h('div', { class: 'card' }, h('b', null, 'Your leave this past year'), h('div', { class: 'small muted', style: { margin: '4px 0 8px' } }, [...byType].map(([k, n]) => `${k}: ${n} day${n > 1 ? 's' : ''}`).join(' · ')),
-      (S.leaveDays || []).slice(0, 60).map((d) => h('div', { class: 'day' }, h('div', { class: 'd' }, h('b', null, String(+String(d.leave_date).slice(8, 10))), h('span', null, dmy(d.leave_date).split(' ')[1])), h('div', { class: 'grow' }, h('b', null, d.type_name), h('div', { class: 'small muted' }, d.project_name || '')), h('div', { class: 'right small' }, d.hours ? hrs(d.hours) + ' h' : '')))) : h('div', { class: 'card muted' }, 'No leave recorded in the past year.')];
+      (S.leaveDays || []).slice(0, 60).map((d) => h('div', { class: 'day' }, h('div', { class: 'd' }, h('b', null, String(+String(d.leave_date).slice(8, 10))), h('span', null, dmy(d.leave_date).split(' ')[1])), h('div', { class: 'grow' }, h('b', null, d.type_name), h('div', { class: 'small muted' }, d.project_name || '')), h('div', { class: 'right small' }, d.hours ? hrs(d.hours) + ' h' : '')))) : h('div', { class: 'card muted' }, 'No leave recorded in the past year.')].filter(Boolean);
 }
 function slipsView() {
   if (!S.slips.length) return h('div', { class: 'card muted' }, 'No payslips are available yet. They appear here when your employer publishes them.');

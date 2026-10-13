@@ -647,3 +647,42 @@ export async function uploadPhoto(empId, blob) {
 export const removePhoto = async (empId) => ok(await sb.rpc('set_employee_photo', { p_emp: empId, p_path: '' }));
 export const applyProjectWindows = async (runId, stream, period) => ok(await sb.rpc('apply_project_windows', { p_run: runId, p_stream: stream, p_period: period }));
 export const loadCalendarPeriod = async (stream, period) => ok(await sb.from('pay_calendar').select('*').eq('stream', stream).eq('period', period).order('pay_group').order('project_name'));
+
+// =====================================================================================================
+// v4.9: leave requests, bulk leave, new payroll by hand, clock upload
+// =====================================================================================================
+export const loadLeaveRequests = async () => fetchAll(() => sb.from('leave_requests').select('*').order('date_from', { ascending: false }).order('id'));
+export async function decideLeave(id, status, note) { const me = (await sb.auth.getUser()).data.user; ok(await sb.from('leave_requests').update({ status, decision_note: note || null, decided_at: new Date().toISOString(), decided_by_email: me ? me.email : null }).eq('id', id)); }
+export const addLeaveRequest = async (row) => ok(await sb.from('leave_requests').insert({ ...row, source: 'office', status: row.status || 'approved' }).select().single());
+const weekdaysOf = (from, to, weekdaysOnly = true) => { const out = []; for (let d = ymd(from); d <= ymd(to); d = plus(d, 1)) { const wd = new Date(d + 'T00:00:00Z').getUTCDay(); if (!weekdaysOnly || (wd !== 0 && wd !== 6)) out.push(d); } return out; };
+export { weekdaysOf };
+export const loadRunLinesLite = async (runId) => fetchAll(() => sb.from('payroll_lines').select('id,employee_id,employee_name,ni_number,project_name,budgeted_hours,hourly_rate').eq('run_id', runId).order('id'));
+// put an approved request's days on the employee's payroll line
+export async function recordLeaveRequest(req, run, { hoursPerDay = null, lineId = null } = {}) {
+  let lid = lineId;
+  if (!lid) { const ls = ok(await sb.from('payroll_lines').select('id,budgeted_hours').eq('run_id', run.id).eq('employee_id', req.employee_id)); if (!ls.length) throw new Error('This employee has no line in ' + run.label + '. Add them to the payroll first.'); lid = ls[0].id; if (hoursPerDay == null) hoursPerDay = Math.round(((+ls[0].budgeted_hours || 0) / 5) * 100) / 100; }
+  const days = weekdaysOf(req.date_from, req.date_to);
+  const hpd = req.half_day ? (+hoursPerDay || 0) / 2 : +hoursPerDay || 0;
+  await addLeave(lid, days.map((d) => ({ date: d, hours: req.type_code === 'SSP' || req.type_code === 'UNPAID' ? 0 : hpd, type: req.type_code, note: `Leave request${req.reason ? ': ' + req.reason : ''}` })));
+  ok(await sb.from('leave_requests').update({ recorded_run_id: run.id }).eq('id', req.id));
+  return days.length;
+}
+// a brand-new pay run made in the portal (no Excel), optionally with lines copied from the last payroll or from the employee list
+export async function createRunManual({ stream, label, period_start, period_end, mode = 'empty', fromRunId = null, staffRows = [], onProgress = () => {} }) {
+  const run = await createRun({ stream, label, period_start, period_end });
+  const weeks = []; for (let w = mondayOf(period_start); w <= ymd(period_end); w = plus(w, 7)) weeks.push(w);
+  let lines = [];
+  if (mode === 'copy' && fromRunId) {
+    const prev = await fetchAll(() => sb.from('payroll_lines').select('employee_id,project_id,project_name,site_name,employee_name,ni_number,status,contract_type,hourly_rate,budgeted_hours,fixed_pay,pay_group,remarks').eq('run_id', fromRunId).order('id'));
+    lines = prev.filter((l) => !/adhoc/i.test(l.employee_name || '')).map((l) => ({ ...l, id: crypto.randomUUID(), run_id: run.id, status: l.status === 'new starter' ? null : l.status, remarks: null }));
+  } else if (mode === 'staff') {
+    const projects = await loadProjects();
+    const pid = new Map(projects.map((p) => [p.name_key, p]));
+    lines = staffRows.map((e) => { const p = pid.get(normKey(e.default_project)); return { id: crypto.randomUUID(), run_id: run.id, employee_id: e.id, project_id: p ? p.id : null, project_name: e.default_project, site_name: e.default_site || null, employee_name: e.full_name, ni_number: e.ni_number || null, contract_type: e.employment_type === 'permanent' ? 'Hourly' : 'Cover', hourly_rate: +e.default_rate || 0, budgeted_hours: +e.weekly_hours || 0, pay_group: e.pay_group || (p && p.pay_group) || null }; });
+  }
+  let done = 0;
+  for (const part of chunk(lines, 200)) { ok(await sb.from('payroll_lines').insert(part)); done += part.length; onProgress(done / Math.max(1, lines.length) * 0.5); }
+  const wk = lines.flatMap((l) => weeks.map((w) => ({ line_id: l.id, week_start: w, delivered: 0, leave: 0, budget: +l.budgeted_hours || 0, in_window: true })));
+  done = 0; for (const part of chunk(wk, 1000)) { ok(await sb.from('line_weeks').insert(part)); done += part.length; onProgress(0.5 + done / Math.max(1, wk.length) * 0.5); }
+  return { run, lines: lines.length };
+}
