@@ -164,24 +164,26 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
     const projFor = (name) => { const k = normKey(name); return projByKey.get(k) || projAll.find((x) => x.id === aliasKey.get(k)) || null; };
 
     // employees -------------------------------------------------------------
-    const emps = await fetchAll(() => sb.from('employees').select('id,name_key,ni_number').order('id'));
+    const emps = await fetchAll(() => sb.from('employees').select('id,name_key,ni_number,employee_code').order('id'));
+    const byCode = new Map(emps.filter((e) => e.employee_code).map((e) => [e.employee_code.toUpperCase(), e.id]));
     const byNi = new Map(emps.filter((e) => e.ni_number).map((e) => [e.ni_number, e.id]));
     const byName = new Map(); for (const e of emps) if (!byName.has(e.name_key)) byName.set(e.name_key, e.id);
     const newEmps = new Map();
     for (const l of p.lines) {
       const nk = normKey(l.employee_name);
-      if ((l.ni && byNi.has(l.ni)) || (!l.ni && byName.has(nk))) continue;
+      if ((l.employee_code && byCode.has(l.employee_code)) || (l.ni && byNi.has(l.ni)) || (!l.ni && byName.has(nk))) continue;
       const k = l.ni || 'n:' + nk;
       if (!newEmps.has(k)) newEmps.set(k, { id: crypto.randomUUID(), full_name: l.employee_name, name_key: nk, ni_number: l.ni || null,
-        phone: l.extra?.phone || null, pension: l.extra?.pension || null, employee_pct: l.extra?.employee_pct ?? null, employer_pct: l.extra?.employer_pct ?? null, agreements: l.extra?.agreements || null });
+        phone: l.extra?.phone || null, pension: l.extra?.pension || null, employee_pct: l.extra?.employee_pct ?? null, employer_pct: l.extra?.employer_pct ?? null, agreements: l.extra?.agreements || null,
+        ...(p.template ? { employee_code: l.employee_code || null, email: l.extra?.email || null, employment_type: l.extra?.employment_type || (l.contract_type === 'Cover' ? 'cover' : 'permanent'), default_project: l.project, default_site: l.site || null, default_rate: l.hourly_rate || null, weekly_hours: l.budgeted_hours || null, pay_group: l.pay_group || null, default_contract: l.contract_type || null } : {}) });
     }
     for (const part of chunk([...newEmps.values()], 400)) ok(await sb.from('employees').insert(part));
     for (const e of newEmps.values()) { if (e.ni_number) byNi.set(e.ni_number, e.id); else byName.set(e.name_key, e.id); }
-    const empFor = (l) => (l.ni && byNi.get(l.ni)) || byName.get(normKey(l.employee_name)) || null;
+    const empFor = (l) => (l.employee_code && byCode.get(l.employee_code)) || (l.ni && byNi.get(l.ni)) || byName.get(normKey(l.employee_name)) || null;
 
     // lines, weeks, days ------------------------------------------------------
     const lines = p.lines.filter((l) => !skipKeys.has([l.project, l.site, l.employee_name, l.contract_type].map(normKey).join('|')));
-    const L = [], W = [], D = [];
+    const L = [], W = [], D = [], LV = [];
     for (const l of lines) {
       const id = crypto.randomUUID(), pr = projFor(l.project);
       L.push({ id, run_id: run.id, employee_id: empFor(l), project_id: pr?.id ?? null, project_name: l.project, site_name: l.site, employee_name: l.employee_name,
@@ -190,10 +192,12 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
         remarks: l.remarks, comments: l.comments, pay_group: l.pay_group || pr?.pay_group || null, extra: l.extra });
       for (const w of l.weeks) W.push({ line_id: id, week_start: w.week_start, delivered: w.delivered, leave: w.leave, budget: w.budget, in_window: w.in_window, variance_override: w.variance_override });
       for (const d of l.days) D.push({ line_id: id, work_date: d.d, hours: d.hours, note: d.note });
+      for (const v of l.leave || []) LV.push({ line_id: id, leave_date: v.date, hours: +v.hours || 0, type_code: v.type, amount: v.amount ?? null, note: 'From the payroll template' });
     }
     const total = L.length + W.length + D.length; let done = 0;
     const push = async (table, rows, size) => { for (const part of chunk(rows, size)) { ok(await sb.from(table).insert(part)); done += part.length; onProgress(done / total, `${table.replace('_', ' ')}… ${done.toLocaleString()} / ${total.toLocaleString()}`); } };
     await push('payroll_lines', L, 200); await push('line_weeks', W, 1000); await push('daily_hours', D, 1000);
+    if (LV.length) { const codes = new Set((await loadLeaveTypes()).map((t) => t.code)); for (const part of chunk(LV.filter((x) => codes.has(x.type_code)), 1000)) ok(await sb.from('line_leave').upsert(part, { onConflict: 'line_id,leave_date' })); }
 
     // pay windows: add the ones we do not have yet (never overwrite windows someone already edited)
     const have = new Set((await loadPeriods(run.id)).map((x) => x.pay_group));

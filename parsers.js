@@ -42,6 +42,15 @@ function parseDay(v) {
   return { hours: pureNumber ? parseFloat(s) : toNum(s), note: pureNumber ? null : s };
 }
 
+// Leave codes typed in a day cell of the payroll template: "AL", "AL 3", "SSP", "SICK 4", "UNPAID", "BH 3", "SPECIAL 2"
+const LEAVE_CODES = ['AL', 'BH', 'SICK', 'SSP', 'SPECIAL', 'UNPAID'];
+export function parseLeaveCode(v) {
+  if (typeof v !== 'string') return null;
+  const m = v.trim().match(/^([A-Za-z]+)\s*[:\-]?\s*(\d+(?:\.\d+)?)?$/);
+  if (!m || !LEAVE_CODES.includes(m[1].toUpperCase())) return null;
+  return { type: m[1].toUpperCase(), hours: m[2] ? parseFloat(m[2]) : null };
+}
+
 // Canonical pay-date group: '24th','25th','26th','28th','29th','5th','LWD'
 export function normPayGroup(v) {
   const s = norm(v).toLowerCase();
@@ -95,6 +104,7 @@ function colIndex(header, name, from = 0) {
 
 export function detectFileKind(XLSX, wb) {
   const names = wb.SheetNames.map((n) => n.trim().toLowerCase());
+  if (names.includes('template info') && names.includes('detailed')) return 'template';
   if (names.includes('detailed')) return 'monthly';
   if (names.includes('fortnightly timesheet details')) return 'fortnightly';
   return null;
@@ -148,7 +158,8 @@ function mergeProjects(...lists) {
 }
 
 // ---------- MONTHLY (sheet "Detailed") ----------
-export function parseMonthly(XLSX, wb, fileName = '') {
+export function parseMonthly(XLSX, wb, fileName = '', opt = {}) {
+  const T = !!opt.template;
   const ws = sheetByName(wb, 'Detailed');
   if (!ws) throw new Error('Sheet "Detailed" not found');
   const rows = rowsOf(XLSX, ws);
@@ -164,6 +175,7 @@ export function parseMonthly(XLSX, wb, fileName = '') {
     payDate: colIndex(H, 'Pay date'), tupe: colIndex(H, 'Tupe'), phone: colIndex(H, 'Phone'), pension: colIndex(H, 'Pension'),
     empPct: colIndex(H, 'Employee %'), emprPct: colIndex(H, 'Employer %'), allowance: colIndex(H, 'Allowance'),
     agreements: colIndex(H, 'Agreements'), timings: colIndex(H, 'Timings'),
+    code: colIndex(H, 'Employee ID'), etype: colIndex(H, 'Employment Type'), sspAmt: colIndex(H, 'SSP amount per day'), email: colIndex(H, 'Email'),
     // Excel's own results, kept only so we can prove the maths matches
     xActual: colIndex(H, 'Actual Hours'), xLeave: colIndex(H, 'Actual Leaves Hours'), xOver: colIndex(H, 'Over Hours'),
     xLess: colIndex(H, 'Less Hours'), xHourly: colIndex(H, 'Hourly Payment'), xGross: colIndex(H, 'Gross Pay'),
@@ -192,7 +204,20 @@ export function parseMonthly(XLSX, wb, fileName = '') {
     if (!project || !emp) continue;
     const weeks = [], days = [];
     const budget = toNum(row[c.budget]);
+    const leaveDays = [];
     for (const b of blocks) {
+      if (T) {   // our own template: hours come from the day cells, leave from the leave codes; every week counts
+        let worked = 0, lv = 0, any = false;
+        for (const d of b.days) {
+          const raw = row[d.col]; if (isBlank(raw)) continue; any = true;
+          const L = parseLeaveCode(raw);
+          if (L) { const hh = L.hours ?? (['SSP', 'UNPAID'].includes(L.type) ? 0 : Math.round(((budget || 0) / 5) * 100) / 100); lv += hh; leaveDays.push({ date: d.iso, type: L.type, hours: hh }); }
+          else { const p = parseDay(raw); if (p) { if (p.hours !== null) worked += p.hours; days.push({ d: d.iso, hours: p.hours, note: p.note }); } }
+        }
+        const typedLeave = toNum(row[b.leaveCol]);
+        if (any || typedLeave !== null || budget) weeks.push({ week_start: b.weekStart, delivered: worked, leave: typedLeave ?? lv, budget: budget ?? 0, in_window: true, variance_override: null });
+        continue;
+      }
       const delivered = toNum(row[b.totalCol]), leave = toNum(row[b.leaveCol]);
       const variancePresent = !isBlank(row[b.varCol]);
       if (delivered !== null || leave !== null || variancePresent) {
@@ -209,7 +234,11 @@ export function parseMonthly(XLSX, wb, fileName = '') {
       }
     }
     const pg = c.payDate >= 0 && !isBlank(row[c.payDate]) ? normPayGroup(row[c.payDate]) : groupByProject.get(normKey(project)) || null;
+    const sspAmt = c.sspAmt >= 0 ? toNum(row[c.sspAmt]) : null;
+    const pgT = pg || (opt.stream === 'fortnightly' ? 'Fortnightly' : null);
     lines.push({
+      employee_code: c.code >= 0 ? norm(row[c.code]).toUpperCase() || null : null,
+      leave: leaveDays.map((x) => ({ ...x, amount: x.type === 'SSP' ? sspAmt : null })),
       project, site: norm(row[c.site]) || null, employee_name: emp, ni: norm(row[c.ni]).replace(/\s+/g, '').toUpperCase() || null,
       blip_site: norm(row[c.blip]) || null, status: norm(row[c.status]) || null, contract_type: tidyType(row[c.type]),
       hourly_rate: toNum(row[c.rate]) ?? 0, budgeted_hours: budget ?? 0,
@@ -217,8 +246,9 @@ export function parseMonthly(XLSX, wb, fileName = '') {
       addition: (c.add >= 0 ? toNum(row[c.add]) : 0) ?? 0, deduction: (c.ded >= 0 ? toNum(row[c.ded]) : 0) ?? 0,
       weeks_reconciled: c.weeksRec >= 0 ? toNum(row[c.weeksRec]) : null,
       remarks: c.remarks >= 0 ? norm(row[c.remarks]) || null : null, comments: c.comments >= 0 ? norm(row[c.comments]) || null : null,
-      pay_group: pg,
+      pay_group: T ? pgT : pg,
       extra: {
+        employment_type: c.etype >= 0 ? (/cover|temp/i.test(norm(row[c.etype])) ? 'cover' : norm(row[c.etype]) ? 'permanent' : null) : null, email: c.email >= 0 ? norm(row[c.email]).toLowerCase() || null : null,
         tupe: c.tupe >= 0 ? norm(row[c.tupe]) || null : null, phone: c.phone >= 0 ? norm(row[c.phone]) || null : null,
         pension: c.pension >= 0 ? norm(row[c.pension]) || null : null, employee_pct: c.empPct >= 0 ? toNum(row[c.empPct]) : null,
         employer_pct: c.emprPct >= 0 ? toNum(row[c.emprPct]) : null, allowance: c.allowance >= 0 ? norm(row[c.allowance]) || null : null,
@@ -232,7 +262,7 @@ export function parseMonthly(XLSX, wb, fileName = '') {
   }
   const dates = blocks.flatMap((b) => b.days.map((d) => d.iso)).sort();
   return {
-    stream: 'monthly', source_file: fileName, sheet: 'Detailed',
+    stream: T ? (opt.stream || 'monthly') : 'monthly', source_file: fileName, sheet: 'Detailed', template: T,
     period_start: dates[0], period_end: dates[dates.length - 1],
     weeks: blocks.map((b) => ({ week_start: b.weekStart, label: b.label })),
     lines, periods: derivePeriods(lines), projects: mergeProjects(projects), warnings: [],
@@ -311,6 +341,12 @@ export function parseFortnightly(XLSX, wb, fileName = '') {
 
 export function parseWorkbook(XLSX, wb, fileName = '') {
   const kind = detectFileKind(XLSX, wb);
+  if (kind === 'template') {
+    const ws = sheetByName(wb, 'Template Info'); const info = ws ? rowsOf(XLSX, ws) : [];
+    const stream = info.some((r) => (r || []).some((c) => /fortnight/i.test(String(c || '')))) ? 'fortnightly' : 'monthly';
+    const nameRow = info.find((r) => /payroll name/i.test(String((r || [])[0] || '')));
+    const out = parseMonthly(XLSX, wb, fileName, { template: true, stream }); out.label = nameRow && nameRow[1] ? String(nameRow[1]).trim() : null; return out;
+  }
   if (kind === 'monthly') return parseMonthly(XLSX, wb, fileName);
   if (kind === 'fortnightly') return parseFortnightly(XLSX, wb, fileName);
   throw new Error('Unrecognised file. Expected a workbook with a "Detailed" sheet (monthly) or a "Fortnightly TimeSheet Details" sheet.');

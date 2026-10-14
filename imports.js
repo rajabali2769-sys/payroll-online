@@ -3,6 +3,7 @@ import { parseWorkbook, detectFileKind } from './parsers.js';
 import { calcLine } from './calc.js';
 import { h, clear, money, hrs, dm, dmy, toast, icon, natCompare } from './ui.js';
 import { ctx, setRun } from './ctx.js';
+import { templateModal } from './tplgen.js';
 
 const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
 function loadXLSX() {
@@ -10,6 +11,7 @@ function loadXLSX() {
   return new Promise((res, rej) => { const s = document.createElement('script'); s.src = XLSX_URL; s.onload = () => res(window.XLSX); s.onerror = () => rej(new Error('Could not load the Excel reader. Check your internet connection.')); document.head.append(s); });
 }
 const NEEDED = {
+  template: ['Detailed', 'Projects', 'Template Info'],
   monthly: ['Detailed', 'Projects'],
   fortnightly: ['Fortnightly TimeSheet Details', 'Projects', 'Account List', 'Col Type'],
 };
@@ -18,7 +20,7 @@ async function readFile(file) {
   const buf = await file.arrayBuffer();
   const names = XLSX.read(buf, { type: 'array', bookSheets: true }).SheetNames;
   const kind = detectFileKind(XLSX, { SheetNames: names });
-  if (!kind) throw new Error('This does not look like a monthly ("Detailed" sheet) or fortnightly ("Fortnightly TimeSheet Details" sheet) payroll file.');
+  if (!kind) throw new Error('This does not look like a payroll file. Use the Payroll Online template (Download template), or a monthly ("Detailed" sheet) or fortnightly ("Fortnightly TimeSheet Details" sheet) file.');
   const want = names.filter((n) => NEEDED[kind].some((w) => w.toLowerCase() === n.trim().toLowerCase()));
   const wb = XLSX.read(buf, { type: 'array', sheets: want, cellFormula: false, cellStyles: false, cellNF: false, cellHTML: false });
   return parseWorkbook(XLSX, wb, file.name);
@@ -33,7 +35,7 @@ export async function render(root) {
   ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', (e) => handle([...e.dataTransfer.files]));
-  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Import files'), h('p', null, 'Add a month, a fortnight or a corrected file whenever you like. Nothing is stored until you press Import.'))), drop, input, list);
+  root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Import files'), h('p', null, 'Add a month, a fortnight or a corrected file whenever you like. Nothing is stored until you press Import.')), h('div', { class: 'row' }, h('button', { class: 'btn primary', onClick: templateModal }, icon('download'), 'Download payroll template'))), drop, input, list);
 
   async function handle(files) {
     for (const f of files) {
@@ -54,7 +56,7 @@ export async function render(root) {
     const groups = {}; p.lines.forEach((l) => { const g = l.pay_group || 'Unassigned'; groups[g] = (groups[g] || 0) + 1; });
     const people = new Set(p.lines.map((l) => l.ni || l.employee_name.toLowerCase())).size;
     const noType = p.lines.filter((l) => !l.contract_type).length;
-    const defLabel = p.stream === 'monthly' ? file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() : `Fortnight ${dm(p.period_start)} – ${dmy(p.period_end)}`;
+    const defLabel = p.label ? p.label : p.stream === 'monthly' ? file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim() : `Fortnight ${dm(p.period_start)} – ${dmy(p.period_end)}`;
     const existing = ctx.runs.filter((r) => r.stream === p.stream);
     const label = h('input', { type: 'text', value: defLabel, list: 'labels-' + p.stream });
     const dl = h('datalist', { id: 'labels-' + p.stream }, existing.map((r) => h('option', { value: r.label })));
