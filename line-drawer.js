@@ -54,14 +54,14 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
         h('tbody', null, wkStarts.map((ws) => {
           const w = wmap.get(ws) || { line_id: lineId, week_start: ws, delivered: 0, leave: 0, budget: +line.budgeted_hours || 0, in_window: true, variance_override: null };
           const save = (patch) => guard(() => upsertWeek({ line_id: lineId, week_start: ws, delivered: w.delivered, leave: w.leave, budget: w.budget, in_window: w.in_window, variance_override: w.variance_override, ...patch }));
-          const calc = w.variance_override !== null && w.variance_override !== undefined ? +w.variance_override : +w.delivered + +w.leave - +w.budget;
+          const calc = w.variance_override !== null && w.variance_override !== undefined ? +w.variance_override - +w.leave : +w.delivered - +w.budget;
           return h('tr', null, h('td', null, `${dm(ws)} – ${dm(addDays(ws, 6))}`),
             h('td', { class: 'num' }, num(w.delivered, (v) => save({ delivered: v }))), h('td', { class: 'num' }, num(w.leave, (v) => save({ leave: v }))), h('td', { class: 'num' }, num(w.budget, (v) => save({ budget: v }))),
             h('td', null, h('input', { type: 'checkbox', checked: w.in_window, disabled: !edit, onChange: (e) => save({ in_window: e.target.checked }) })),
             h('td', { class: 'num' }, w.in_window ? hrs(calc) : h('span', { class: 'muted' }, '—'), w.variance_override !== null && w.variance_override !== undefined ?
               h('span', { class: 'overr', title: 'Typed by hand in the old Excel. Click to remove the override and calculate it instead.', onClick: () => edit && save({ variance_override: null }) }, ' ⚑') : null));
         })))),
-      h('div', { class: 'small muted' }, '⚑ = a variance that was typed over by hand in Excel. Everything else is calculated: delivered + leave − budget.'),
+      h('div', { class: 'small muted' }, '⚑ = a variance that was typed over by hand in Excel. Everything else is calculated: hours worked − budget. Leave is paid but never counts against the budget.'),
 
       h('h4', null, 'Day by day'),
       !wkStarts.length ? h('div', { class: 'muted' }, 'No daily hours were imported for this line.') :

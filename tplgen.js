@@ -87,7 +87,7 @@ export async function buildTimesheet({ stream, label, start, weeks = 2, prefill,
     const orig = wk.map((_, w) => colName(C['b' + w] + 1) + r).join(','), hol = wk.map((_, w) => colName(C['b' + w] + 2) + r).join(','), bud = wk.map((_, w) => colName(C['b' + w]) + r).join(',');
     row[C.del] = { f: `SUM(${orig})` }; row[C.hol] = { f: `SUM(${hol})` }; row[C.pay] = { f: `${X('del', r)}+${X('hol', r)}` }; row[C.rate] = p.rate ?? ''; row[C.bh] = { f: `SUM(${bud})` };
     row[C.tcw] = { f: `SUM(${X('ww', r)}:${X('ae', r)})` };
-    wk.forEach((_, w) => { const b = C['b' + w]; row[C['diff' + w]] = { f: `SUM(${colName(b + 1)}${r}:${colName(b + 2)}${r})-${colName(b)}${r}` }; });
+    wk.forEach((_, w) => { const b = C['b' + w]; row[C['diff' + w]] = { f: `${colName(b + 1)}${r}-${colName(b)}${r}` }; });   // worked hours − budget (leave is not budget)
     row[C.gross] = { f: `IF(UPPER(${X('type', r)})="FIXED",N(${X('bud', r)})+N(${X('addn', r)}),${X('rate', r)}*${X('pay', r)}+N(${X('addn', r)}))` };
     row[C.bud] = fixed ? (p.fixed ?? 0) : p.bo != null ? p.bo : { f: `${X('bh', r)}*${X('rate', r)}` };
     row[C.addn] = p.add ?? ''; row[C.type] = p.type || 'Hourly'; row[C.code] = p.code || ''; row[C.notes] = p.notes || '';
@@ -107,7 +107,7 @@ export async function buildTimesheet({ stream, label, start, weeks = 2, prefill,
     ['Gross – Hourly / Agency', '= New Hourly Rate × Total Hours to Pay + Addittion/Deduction'], ['Gross – Fixed', '= Budgeted Wages (type the fixed wage there) + Addittion/Deduction'],
     ['Budgeted Wages – Hourly', '= Total Budgeted Hours (all the Weekly Budgets) × New Hourly Rate. Type a number instead only for a different budget (e.g. 0 for a Vacant post).'],
     ['Addittion/Deduction', 'Money only (+ add / − take off). SSP goes here at £24.65 a day, e.g. =24.65*10. Notes go in the Notes column — words here are ignored.'],
-    ['Holidays Hours', 'Paid holiday hours for that week: paid, and they count towards the budget.'], ['Difference in Hours', '= Original Hours + Holidays Hours − Weekly Budget for each week (positive = over budget).'],
+    ['Holidays Hours', 'Paid holiday hours for that week: paid, but NOT counted against the budget (leave is charged separately).'], ['Difference in Hours', '= Original Hours − Weekly Budget for each week (positive = over budget). Leave of any kind is paid but never counts against the budget.'],
     ...(MONTHLY ? [['Pay date', 'The pay date group: 24th, 25th, 26th, 28th, 29th, Last Working day, 5th (empty = the project’s pay date).']] : []),
     ['Ad-hoc Hours', 'Extra hours charged to the client that are ALREADY in the day cells (e.g. 70 worked, budget 60, 10 ad-hoc → type 10). They are paid once, kept out of the budget and shown on Ad-hoc & billing.'],
     ['ADHOC lines', 'Or put ad-hoc work on its own line named “Name(ADHOC)” with the hours in the days — the whole line is kept out of the budget. Do not put the same money in Addittion/Deduction as well.'],

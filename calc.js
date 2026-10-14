@@ -9,7 +9,7 @@ export function calcLine(line, stream) {
   for (const w of weeks) {
     if (w.in_window === false) continue;
     const ai = inc.get(w.week_start) || 0;
-    const v = w.variance_override != null ? +w.variance_override - ai : (+w.delivered || 0) - ai + (+w.leave || 0) - (+w.budget || 0);
+    const v = w.variance_override != null ? +w.variance_override - (+w.leave || 0) - ai : (+w.delivered || 0) - ai - (+w.budget || 0);   // worked hours only — leave never counts against the budget
     if (v > 0) over += v; else if (v < 0) less += v;
   }
   const type = String(line.contract_type || '').toLowerCase();
@@ -22,5 +22,5 @@ export function calcLine(line, stream) {
     : weeks.reduce((s, w) => s + (+w.budget || 0), 0);
   const adhoc = /ad[\s_-]*hoc/i.test(String(line.employee_name || ''));
   const budgeted = adhoc ? 0 : fixed !== null ? fixed : line.budget_override != null ? +line.budget_override : budgetHours * rate;
-  return { actual, leave, over, less, hourly, gross, budget_hours: adhoc ? 0 : budgetHours, budgeted, diff: gross - budgeted };
+  return { actual, leave, over, less, hourly, gross, budget_hours: adhoc ? 0 : budgetHours, budgeted, diff: gross - ((type === 'hourly' || type === 'cover' || type === 'agency' ? leave * rate : 0) + (+line.leave_pay || 0)) - budgeted };
 }
