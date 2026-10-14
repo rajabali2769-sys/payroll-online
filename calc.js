@@ -12,12 +12,12 @@ export function calcLine(line, stream) {
   }
   const type = String(line.contract_type || '').toLowerCase();
   const rate = +line.hourly_rate || 0;
-  const hourly = type === 'hourly' || type === 'cover' ? (actual + leave) * rate : 0;
+  const hourly = type === 'hourly' || type === 'cover' || type === 'agency' ? (actual + leave) * rate : 0;
   const fixed = line.fixed_pay === null || line.fixed_pay === undefined ? null : +line.fixed_pay;
   const gross = (fixed ?? 0) + hourly + (+line.addition || 0) + (+line.leave_pay || 0) - (+line.deduction || 0);
   const budgetHours = stream === 'monthly'
     ? (line.weeks_reconciled == null ? 0 : (+line.budgeted_hours || 0) * (+line.weeks_reconciled))
     : weeks.reduce((s, w) => s + (+w.budget || 0), 0);
-  const budgeted = fixed !== null ? fixed : budgetHours * rate;
+  const budgeted = fixed !== null ? fixed : line.budget_override != null ? +line.budget_override : budgetHours * rate;
   return { actual, leave, over, less, hourly, gross, budget_hours: budgetHours, budgeted, diff: gross - budgeted };
 }

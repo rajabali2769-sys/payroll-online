@@ -105,6 +105,7 @@ function colIndex(header, name, from = 0) {
 export function detectFileKind(XLSX, wb) {
   const names = wb.SheetNames.map((n) => n.trim().toLowerCase());
   if (names.includes('template info') && names.includes('detailed')) return 'template';
+  if (names.includes('monthly timesheet details')) return 'monthly_ts';
   if (names.includes('detailed')) return 'monthly';
   if (names.includes('fortnightly timesheet details')) return 'fortnightly';
   return null;
@@ -269,10 +270,19 @@ export function parseMonthly(XLSX, wb, fileName = '', opt = {}) {
   };
 }
 
+// Does a gross formula add the Addition cell on top (outside any IF)? "IF(AO3="FIXED",AM3+AN3,AD3*AC3)+AN3" → yes; "IF(…)" alone → no
+function addedOutsideIf(f, addr) {
+  let s = String(f).replace(/\$/g, '').toUpperCase(); const a = addr.toUpperCase();
+  for (let k = s.indexOf('IF('); k >= 0; k = s.indexOf('IF(')) { let d = 0, e = k + 2; for (; e < s.length; e++) { if (s[e] === '(') d++; else if (s[e] === ')') { d--; if (d === 0) break; } } s = s.slice(0, k) + s.slice(e + 1); }
+  return new RegExp('(^|[^A-Z0-9])' + a + '($|[^0-9])').test(s);
+}
+
 // ---------- FORTNIGHTLY (sheet "Fortnightly TimeSheet Details") ----------
-export function parseFortnightly(XLSX, wb, fileName = '') {
-  const ws = sheetByName(wb, 'Fortnightly TimeSheet Details');
-  if (!ws) throw new Error('Sheet "Fortnightly TimeSheet Details" not found');
+export function parseFortnightly(XLSX, wb, fileName = '', opt = {}) {
+  // The same layout is used for the monthly timesheet ("Monthly TimeSheet Details"): same columns, same formulas, 4–6 weeks
+  const MONTHLY = opt.stream === 'monthly', SHEET = MONTHLY ? 'Monthly TimeSheet Details' : 'Fortnightly TimeSheet Details';
+  const ws = sheetByName(wb, SHEET);
+  if (!ws) throw new Error(`Sheet "${SHEET}" not found`);
   const rows = rowsOf(XLSX, ws);
   const hr = findHeaderRow(rows, ['employee name', 'project', 'payroll type']);
   if (hr < 0) throw new Error('Could not find the header row (Project / Employee Name / Payroll type) in "Fortnightly TimeSheet Details"');
@@ -281,9 +291,10 @@ export function parseFortnightly(XLSX, wb, fileName = '') {
     project: colIndex(H, 'Project'), emp: colIndex(H, 'Employee Name'), ni: colIndex(H, 'NI No.'), ftype: colIndex(H, 'Fortnightly type'),
     cover: colIndex(H, 'Cover'), rate: colIndex(H, 'New Hourly Rate'), add: colIndex(H, 'Addittion/Deduction'), ptype: colIndex(H, 'Payroll type'),
     xGross: colIndex(H, 'Gross Wages New rate'), xBud: colIndex(H, 'Budgeted Wages'), xDelivered: colIndex(H, 'Total Delivered Hours'),
-    xToPay: colIndex(H, 'Total Hours to Pay'),
+    xToPay: colIndex(H, 'Total Hours to Pay'), code: colIndex(H, 'Employee ID'), payDate: colIndex(H, 'Pay date'), site: colIndex(H, 'Site Name'), notes: colIndex(H, 'Notes'),
   };
-  for (const k of ['project', 'emp', 'rate', 'ptype']) if (c[k] < 0) throw new Error(`Missing column for ${k} in "Fortnightly TimeSheet Details"`);
+  const hasFormulas = Object.keys(ws).some((k) => k[0] !== '!' && ws[k] && ws[k].f);
+  for (const k of ['project', 'emp', 'rate', 'ptype']) if (c[k] < 0) throw new Error(`Missing column for ${k} in "${SHEET}"`);
   // Blocks: 7 date columns then Weekly Budget, Original Hours, Holidays Hours
   const blocks = [];
   for (let i = 0; i < H.length; i++) {
@@ -294,7 +305,8 @@ export function parseFortnightly(XLSX, wb, fileName = '') {
       blocks.push({ budgetCol: i, origCol: i + 1, holCol: i + 2, days, weekStart: days[0].iso });
     }
   }
-  if (!blocks.length) throw new Error('No weekly blocks ("Weekly Budget") found in the fortnightly sheet');
+  if (!blocks.length) throw new Error(`No weekly blocks ("Weekly Budget") found in "${SHEET}"`);
+  const groupByProject = new Map(parseProjectsSheet(XLSX, wb).map((p) => [normKey(p.name), p.pay_group]));
 
   // Fortnightly staff are paid on their own cycle, so they all sit in one 'Fortnightly' pay group.
   const projectRefs = mergeProjects(parseAccountList(XLSX, wb), parseColType(XLSX, wb));
@@ -314,16 +326,35 @@ export function parseFortnightly(XLSX, wb, fileName = '') {
     }
     const ptype = tidyType(row[c.ptype]) || 'Hourly';
     const budgetedWages = c.xBud >= 0 ? toNum(row[c.xBud]) : null;
+    // Follow the sheet's own formulas where they differ row by row (needs the workbook read with formulas):
+    //  · Gross "=IF(..FIXED..,AM+AN,AD*AC)" WITHOUT "+AN" on an hourly row → the Addition is NOT paid (e.g. ADHOC lines where AN is only a note)
+    //  · "Budgeted Wages" typed as a number on an hourly row (e.g. 0 for a Vacant post) → that typed budget is used
+    const cellF = (ci) => { if (ci < 0 || !hasFormulas) return undefined; const cell = ws[XLSX.utils.encode_cell({ r, c: ci })]; return cell ? cell.f || '' : undefined; };
+    const isFixed = ptype.toUpperCase() === 'FIXED';
+    const addRaw = (c.add >= 0 ? toNum(row[c.add]) : 0) ?? 0;
+    const gF = cellF(c.xGross), addCol = c.add >= 0 ? XLSX.utils.encode_col(c.add) + (r + 1) : null;
+    // Addition paid on an hourly line? Follow what the sheet itself worked out: compare its Gross with hours×rate with and without the Addition
+    const sheetGross = c.xGross >= 0 ? toNum(row[c.xGross]) : null;
+    let addExcluded = false;
+    if (!isFixed && addRaw !== 0 && sheetGross !== null) {
+      const hrsToPay = blocks.reduce((t, b) => t + (toNum(row[b.origCol]) ?? 0) + (toNum(row[b.holCol]) ?? 0), 0), base = (toNum(row[c.rate]) ?? 0) * hrsToPay;
+      addExcluded = Math.abs(sheetGross - base) < 0.01 && Math.abs(sheetGross - (base + addRaw)) >= 0.01;
+    }
+    const budF = cellF(c.xBud), budgetOverride = !isFixed && hasFormulas && budF === '' && budgetedWages !== null ? budgetedWages : null;
+    // monthly: the budget is the sum of the weekly budgets → weekly budget (average) × number of weeks
+    const wkBud = weeks.reduce((t, w) => t + (+w.budget || 0), 0);
+    const pgM = c.payDate >= 0 && !isBlank(row[c.payDate]) ? normPayGroup(row[c.payDate]) : groupByProject.get(normKey(project)) || null;
     lines.push({
-      project, site: null, employee_name: emp, ni: norm(row[c.ni]).replace(/\s+/g, '').toUpperCase() || null,
+      project, site: c.site >= 0 ? norm(row[c.site]) || null : null, employee_name: emp, ni: norm(row[c.ni]).replace(/\s+/g, '').toUpperCase() || null,
       blip_site: null, status: null, contract_type: ptype,
-      hourly_rate: toNum(row[c.rate]) ?? 0, budgeted_hours: 0,
+      hourly_rate: toNum(row[c.rate]) ?? 0, budgeted_hours: MONTHLY ? (blocks.length ? wkBud / blocks.length : 0) : 0,
       // FIXED payroll: gross = budgeted wages (+ additions), so budgeted wages become the fixed pay
-      fixed_pay: ptype.toUpperCase() === 'FIXED' ? budgetedWages ?? 0 : null,
-      leave_pay: 0, addition: (c.add >= 0 ? toNum(row[c.add]) : 0) ?? 0, deduction: 0,
-      weeks_reconciled: null, remarks: null, comments: null,
-      pay_group: 'Fortnightly',
-      extra: { fortnight_type: c.ftype >= 0 ? toNum(row[c.ftype]) : null, cover: c.cover >= 0 ? norm(row[c.cover]) || null : null },
+      fixed_pay: isFixed ? budgetedWages ?? 0 : null, budget_override: budgetOverride,
+      leave_pay: 0, addition: addExcluded ? 0 : addRaw, deduction: 0,
+      weeks_reconciled: MONTHLY ? blocks.length : null, remarks: c.notes >= 0 ? norm(row[c.notes]) || null : null, comments: null,
+      pay_group: MONTHLY ? pgM : 'Fortnightly',
+      extra: { fortnight_type: c.ftype >= 0 ? toNum(row[c.ftype]) : null, cover: c.cover >= 0 ? norm(row[c.cover]) || null : null, ...(addExcluded ? { addition_not_paid: addRaw } : {}), ...(c.code >= 0 && norm(row[c.code]) ? { employee_code: norm(row[c.code]).toUpperCase() } : {}) },
+      employee_code: c.code >= 0 ? norm(row[c.code]).toUpperCase() || null : null,
       weeks, days,
       check: { gross: c.xGross >= 0 ? toNum(row[c.xGross]) : null, budgeted: budgetedWages,
         delivered: c.xDelivered >= 0 ? toNum(row[c.xDelivered]) : null, toPay: c.xToPay >= 0 ? toNum(row[c.xToPay]) : null },
@@ -332,7 +363,7 @@ export function parseFortnightly(XLSX, wb, fileName = '') {
   }
   const dates = blocks.flatMap((b) => b.days.map((d) => d.iso)).sort();
   return {
-    stream: 'fortnightly', source_file: fileName, sheet: 'Fortnightly TimeSheet Details',
+    stream: MONTHLY ? 'monthly' : 'fortnightly', source_file: fileName, sheet: SHEET,
     period_start: dates[0], period_end: dates[dates.length - 1],
     weeks: blocks.map((b) => ({ week_start: b.weekStart, label: `w/c ${b.weekStart}` })),
     lines, periods: derivePeriods(lines), projects: projectRefs, warnings: [],
@@ -347,6 +378,7 @@ export function parseWorkbook(XLSX, wb, fileName = '') {
     const nameRow = info.find((r) => /payroll name/i.test(String((r || [])[0] || '')));
     const out = parseMonthly(XLSX, wb, fileName, { template: true, stream }); out.label = nameRow && nameRow[1] ? String(nameRow[1]).trim() : null; return out;
   }
+  if (kind === 'monthly_ts') return parseFortnightly(XLSX, wb, fileName, { stream: 'monthly' });
   if (kind === 'monthly') return parseMonthly(XLSX, wb, fileName);
   if (kind === 'fortnightly') return parseFortnightly(XLSX, wb, fileName);
   throw new Error('Unrecognised file. Expected a workbook with a "Detailed" sheet (monthly) or a "Fortnightly TimeSheet Details" sheet.');

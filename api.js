@@ -188,7 +188,7 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
       const id = crypto.randomUUID(), pr = projFor(l.project);
       L.push({ id, run_id: run.id, employee_id: empFor(l), project_id: pr?.id ?? null, project_name: l.project, site_name: l.site, employee_name: l.employee_name,
         ni_number: l.ni, blip_site: l.blip_site, status: l.status, contract_type: l.contract_type, hourly_rate: l.hourly_rate, budgeted_hours: l.budgeted_hours,
-        fixed_pay: l.fixed_pay, leave_pay: l.leave_pay, addition: l.addition, deduction: l.deduction, weeks_reconciled: l.weeks_reconciled,
+        fixed_pay: l.fixed_pay, budget_override: l.budget_override ?? null, leave_pay: l.leave_pay, addition: l.addition, deduction: l.deduction, weeks_reconciled: l.weeks_reconciled,
         remarks: l.remarks, comments: l.comments, pay_group: l.pay_group || pr?.pay_group || null, extra: l.extra });
       for (const w of l.weeks) W.push({ line_id: id, week_start: w.week_start, delivered: w.delivered, leave: w.leave, budget: w.budget, in_window: w.in_window, variance_override: w.variance_override });
       for (const d of l.days) D.push({ line_id: id, work_date: d.d, hours: d.hours, note: d.note });
@@ -689,4 +689,10 @@ export async function createRunManual({ stream, label, period_start, period_end,
   const wk = lines.flatMap((l) => weeks.map((w) => ({ line_id: l.id, week_start: w, delivered: 0, leave: 0, budget: +l.budgeted_hours || 0, in_window: true })));
   done = 0; for (const part of chunk(wk, 1000)) { ok(await sb.from('line_weeks').insert(part)); done += part.length; onProgress(0.5 + done / Math.max(1, wk.length) * 0.5); }
   return { run, lines: lines.length };
+}
+export async function loadRunForTemplate(runId) {
+  const lines = await fetchAll(() => sb.from('payroll_lines').select('id,employee_id,employee_name,ni_number,project_name,site_name,contract_type,hourly_rate,budgeted_hours,fixed_pay,budget_override,pay_group,extra').eq('run_id', runId).order('project_name').order('employee_name').order('id'));
+  const weeks = await fetchAll(() => sb.from('v_line_weeks').select('line_id,week_start,budget').eq('run_id', runId).order('line_id').order('week_start'));
+  const by = new Map(); for (const w of weeks) { if (!by.has(w.line_id)) by.set(w.line_id, []); by.get(w.line_id).push(+w.budget || 0); }
+  return lines.map((l) => ({ ...l, week_budgets: by.get(l.id) || [] }));
 }

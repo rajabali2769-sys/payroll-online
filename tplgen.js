@@ -1,5 +1,5 @@
 // The Payroll Online payroll template: one Excel file that holds every part of a payroll, ready to fill in and import.
-import { loadStaff, loadProjects, loadLeaveTypes, loadRunLinesLite, loadCalendarPeriod } from './api.js';
+import { loadStaff, loadProjects, loadLeaveTypes, loadRunLinesLite, loadCalendarPeriod, loadRunForTemplate } from './api.js';
 import { h, toast, modal, dmy, natCompare } from './ui.js';
 import { ctx, currentRun } from './ctx.js';
 import { loadXLSX } from './xlsx.js';
@@ -42,7 +42,85 @@ const COLS = [
   ['Timings', 12, 'Optional: shift timings, e.g. Mon–Fri 06:00–09:00.'],
 ];
 
+// ---------- FORTNIGHTLY and MONTHLY: the same sheet layout and formulas as the Fortnightly TimeSheet workbook ----------
+// Each week: 7 day columns, Weekly Budget, Original Hours (=SUM of the days), Holidays Hours.
+// Gross: Hourly / Agency = rate × (hours + holiday hours) + Addition; Fixed = Budgeted Wages + Addition.
+export async function buildTimesheet({ stream, label, start, weeks = 2, prefill, runId }) {
+  const XLSX = await loadXLSX();
+  const MONTHLY = stream === 'monthly', SHEET = MONTHLY ? 'Monthly TimeSheet Details' : 'Fortnightly TimeSheet Details';
+  const nW = MONTHLY ? Math.max(1, Math.min(6, weeks)) : 2;
+  const projects = await loadProjects().catch(() => []);
+  const s0 = mondayOf(start), wk = Array.from({ length: nW }, (_, i) => plus(s0, i * 7));
+  const lead = ['S.no', 'Project', 'Employee Name', 'NI No.', MONTHLY ? 'Pay date' : 'Fortnightly type', 'Cover'];
+  const C = {}; const head = [...lead];
+  wk.forEach((w, i) => { C['d' + i] = head.length; for (let d = 0; d < 7; d++) head.push(serial(plus(w, d))); C['b' + i] = head.length; head.push('Weekly Budget', 'Original Hours', 'Holidays Hours'); });
+  const add = (k, t) => { C[k] = head.length; head.push(t); };
+  add('del', 'Total Delivered Hours'); add('hol', 'Total Holiday Hours'); add('pay', 'Total Hours to Pay'); add('rate', 'New Hourly Rate'); add('bh', 'Total Budgeted Hours');
+  add('ww', 'Working Weeks'); add('dc', 'Deep Cleaning'); add('ae', 'Annual Entitlement'); add('tcw', 'Total Contracted Weeks');
+  wk.forEach((_, i) => add('diff' + i, `Difference in Hours Week ${String(i + 1).padStart(2, '0')}`));
+  add('gross', 'Gross Wages New rate'); add('bud', 'Budgeted Wages'); add('addn', 'Addittion/Deduction'); add('type', 'Payroll type'); add('code', 'Employee ID'); add('notes', 'Notes');
+  const X = (k, r) => colName(C[k]) + r;
+  let people = [];
+  if (prefill === 'run' && runId) {
+    const [ls, staff] = await Promise.all([loadRunForTemplate(runId), loadStaff().catch(() => [])]); const m = new Map(staff.map((e) => [e.id, e]));
+    people = ls.filter((l) => !/adhoc/i.test(l.employee_name)).map((l) => { const e = m.get(l.employee_id) || {}; const wb0 = l.week_budgets; const wkb = MONTHLY ? (+l.budgeted_hours || wb0[0] || '') : null;
+      return { proj: l.project_name, name: l.employee_name, ni: l.ni_number, ft: MONTHLY ? (l.pay_group === 'LWD' ? 'Last Working day' : l.pay_group || '') : (l.extra || {}).fortnight_type ?? '', cover: (l.extra || {}).cover || (e.employment_type === 'cover' ? 'Yes' : 'No'),
+        wb: wk.map((_, i) => (MONTHLY ? wkb : wb0[i] ?? wb0[0] ?? '')), rate: l.hourly_rate, type: l.contract_type || 'Hourly', fixed: l.fixed_pay, bo: l.budget_override, code: e.employee_code || '' }; });
+  } else if (prefill === 'staff') {
+    const staff = await loadStaff(); const fn = (e) => /fortnight/i.test(String(e.pay_group || ''));
+    const pick = staff.filter((e) => e.emp_status !== 'terminated' && e.default_project && (MONTHLY ? !fn(e) : fn(e)));
+    people = (pick.length ? pick : staff.filter((e) => e.emp_status !== 'terminated' && e.default_project)).sort((a, b) => natCompare(a.default_project, b.default_project) || natCompare(a.full_name, b.full_name))
+      .map((e) => ({ proj: e.default_project, name: e.full_name, ni: e.ni_number, ft: MONTHLY ? (e.pay_group === 'LWD' ? 'Last Working day' : e.pay_group || '') : '', cover: e.employment_type === 'cover' ? 'Yes' : 'No', wb: wk.map(() => e.weekly_hours ?? ''), rate: e.default_rate, type: 'Hourly', code: e.employee_code || '' }));
+  } else {
+    const d = (a) => [...a, ...Array(7 * nW).fill('')].slice(0, 7 * nW);
+    people = [{ proj: 'Example project', name: 'Example Hourly', ni: 'AB123456C', ft: MONTHLY ? '25th' : 1, cover: 'No', wb: wk.map(() => 10), rate: 12.71, type: 'Hourly', days: d([2, 2, 2, 2, 2, '', '', 2, 2, 'AL', 2, 2, '', '']), hol: [0, 2] },
+      { proj: 'Example project', name: 'Example on SSP', ft: MONTHLY ? '25th' : 2, cover: 'No', wb: wk.map(() => 15), rate: 12.71, type: 'Hourly', days: d(['SSP', 'SSP', 'SSP', 'SSP', 'SSP', '', '', 'SSP', 'SSP', 'SSP', 'SSP', 'SSP', '', '']), add: { f: '24.65*10' }, notes: 'SSP 10 days at £24.65' },
+      { proj: 'Example project', name: 'Example Fixed', ft: MONTHLY ? 'Last Working day' : 1, cover: 'No', wb: wk.map(() => 20), rate: 13, type: 'Fixed', fixed: MONTHLY ? 1100 : 520, add: 25, notes: 'Fixed wage typed in Budgeted Wages' },
+      { proj: 'Example project', name: 'Example Cover', ft: MONTHLY ? '25th' : 1, cover: 'Yes', wb: wk.map(() => 6), rate: 12.71, type: 'Hourly', days: d([3, '', 3, '', '', '', '', 3, '', 3]) }];
+  }
+  const rows = [['Employee Details', `${MONTHLY ? 'Monthly' : 'Fortnightly'} timesheet ${dmy(s0)} – ${dmy(plus(s0, nW * 7 - 1))} · ${label}`], head];
+  people.forEach((p, i) => {
+    const r = i + 3, fixed = String(p.type).toUpperCase() === 'FIXED', row = Array(head.length).fill('');
+    Object.assign(row, { 0: i + 1, 1: p.proj, 2: p.name, 3: p.ni || '', 4: p.ft, 5: p.cover });
+    wk.forEach((_, w) => { for (let d = 0; d < 7; d++) row[C['d' + w] + d] = (p.days || [])[w * 7 + d] ?? ''; const b = C['b' + w];
+      row[b] = (p.wb || [])[w] ?? ''; row[b + 1] = { f: `SUM(${colName(C['d' + w])}${r}:${colName(C['d' + w] + 6)}${r})` }; row[b + 2] = (p.hol || [])[w] || ''; });
+    const orig = wk.map((_, w) => colName(C['b' + w] + 1) + r).join(','), hol = wk.map((_, w) => colName(C['b' + w] + 2) + r).join(','), bud = wk.map((_, w) => colName(C['b' + w]) + r).join(',');
+    row[C.del] = { f: `SUM(${orig})` }; row[C.hol] = { f: `SUM(${hol})` }; row[C.pay] = { f: `${X('del', r)}+${X('hol', r)}` }; row[C.rate] = p.rate ?? ''; row[C.bh] = { f: `SUM(${bud})` };
+    row[C.tcw] = { f: `SUM(${X('ww', r)}:${X('ae', r)})` };
+    wk.forEach((_, w) => { const b = C['b' + w]; row[C['diff' + w]] = { f: `SUM(${colName(b + 1)}${r}:${colName(b + 2)}${r})-${colName(b)}${r}` }; });
+    row[C.gross] = { f: `IF(UPPER(${X('type', r)})="FIXED",N(${X('bud', r)})+N(${X('addn', r)}),${X('rate', r)}*${X('pay', r)}+N(${X('addn', r)}))` };
+    row[C.bud] = fixed ? (p.fixed ?? 0) : p.bo != null ? p.bo : { f: `${X('bh', r)}*${X('rate', r)}` };
+    row[C.addn] = p.add ?? ''; row[C.type] = p.type || 'Hourly'; row[C.code] = p.code || ''; row[C.notes] = p.notes || '';
+    rows.push(row);
+  });
+  const n = rows.length, tot = Array(head.length).fill(''); tot[2] = 'TOTAL';
+  for (const k of ['del', 'hol', 'pay', 'bh', 'gross', 'bud', 'addn']) tot[C[k]] = { f: `SUBTOTAL(9,${colName(C[k])}3:${colName(C[k])}${n})` };
+  rows.push([], tot);
+  const ws = XLSX.utils.aoa_to_sheet(rows.map((r) => r.map((v) => (v && typeof v === 'object' && v.f ? null : v))));
+  rows.forEach((r, ri) => r.forEach((v, ci) => { if (v && typeof v === 'object' && v.f) ws[colName(ci) + (ri + 1)] = { t: 'n', f: v.f }; }));
+  for (let ci = 0; ci < head.length; ci++) { const ref = colName(ci) + '2'; if (typeof head[ci] === 'number') { ws[ref].t = 'n'; ws[ref].z = 'ddd dd/mm'; } }
+  ws['!cols'] = head.map((h0, i) => ({ wch: [6, 30, 26, 12, 12, 7][i] || (typeof h0 === 'number' ? 7 : 11) }));
+  ws['!views'] = [{ state: 'frozen', xSplit: 3, ySplit: 2 }];
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, SHEET);
+  const ins = [[`HOW THIS ${MONTHLY ? 'MONTHLY' : 'FORTNIGHTLY'} SHEET CALCULATES PAY (the same rules Payroll Online uses)`], [''],
+    ['Total Hours to Pay', '= hours typed in the day cells (words such as SSP / off / AL are ignored) + Holidays Hours of every week'],
+    ['Gross – Hourly / Agency', '= New Hourly Rate × Total Hours to Pay + Addittion/Deduction'], ['Gross – Fixed', '= Budgeted Wages (type the fixed wage there) + Addittion/Deduction'],
+    ['Budgeted Wages – Hourly', '= Total Budgeted Hours (all the Weekly Budgets) × New Hourly Rate. Type a number instead only for a different budget (e.g. 0 for a Vacant post).'],
+    ['Addittion/Deduction', 'Money only (+ add / − take off). SSP goes here at £24.65 a day, e.g. =24.65*10. Notes go in the Notes column — words here are ignored.'],
+    ['Holidays Hours', 'Paid holiday hours for that week: paid, and they count towards the budget.'], ['Difference in Hours', '= Original Hours + Holidays Hours − Weekly Budget for each week (positive = over budget).'],
+    ...(MONTHLY ? [['Pay date', 'The pay date group: 24th, 25th, 26th, 28th, 29th, Last Working day, 5th (empty = the project’s pay date).']] : []),
+    ['ADHOC lines', 'Name them “Name(ADHOC)” and put the hours in the days. Do not put the same money in Addittion/Deduction as well.'],
+    ['Employee ID', 'Optional: the Payroll Online ID (CFM00012) — matches people even when the spelling differs.'], [''], ['Import', 'Payroll Online → Import Excel → drop this file. The preview checks every line against this sheet.']];
+  const wi = XLSX.utils.aoa_to_sheet(ins); wi['!cols'] = [{ wch: 26 }, { wch: 130 }]; XLSX.utils.book_append_sheet(wb, wi, 'Instructions');
+  const wp = XLSX.utils.aoa_to_sheet([['Project Name', 'Pay date', 'Start Date', 'End Date'], ...projects.map((p) => [p.name, p.pay_group === 'LWD' ? 'Last Working day' : p.pay_group || '', p.start_date || '', p.end_date || ''])]); XLSX.utils.book_append_sheet(wb, wp, 'Projects');
+  const wa = XLSX.utils.aoa_to_sheet([['Account', 'Manager'], ...projects.map((p) => [p.name, p.manager || ''])]); XLSX.utils.book_append_sheet(wb, wa, 'Account List');
+  const wc = XLSX.utils.aoa_to_sheet([['Project', 'Collection Type', 'Status'], ...projects.map((p) => [p.name, p.collection_type || '', ''])]); XLSX.utils.book_append_sheet(wb, wc, 'Col Type');
+  XLSX.writeFile(wb, `${MONTHLY ? 'Monthly' : 'Fortnightly'} TimeSheet - ${label}.xlsx`);
+  return people.length;
+}
+
 export async function buildTemplate({ stream, label, start, weeks, prefill, runId }) {
+  if (stream === 'fortnightly' || stream === 'monthly') return buildTimesheet({ stream, label, start, weeks, prefill, runId });
   const XLSX = await loadXLSX();
   const [projects, types] = await Promise.all([loadProjects().catch(() => []), loadLeaveTypes().catch(() => [])]);
   const wk = []; for (let i = 0, w = mondayOf(start); i < weeks; i++, w = plus(w, 7)) wk.push(w);
@@ -119,7 +197,7 @@ export function templateModal() {
     setTimeout(look);
     const pre = h('select', null, [['sample', 'Example rows (shows how every column works)'], ['staff', 'All current employees (project, rate, hours, pay date filled in)'], ...(run ? [['run', `Copy the people from ${run.label}`]] : [])].map(([v, t]) => h('option', { value: v }, t)));
     return h('div', { class: 'stack' },
-      h('div', { class: 'small' }, 'One Excel file with every part of a payroll: permanent and cover staff, hourly / cover / fixed pay, pay dates, budgets, additions, deductions, leave and SSP (as codes in the days), pension and notes. An Instructions sheet explains each column.'),
+      h('div', { class: 'small' }, 'Monthly and fortnightly use the same layout and formulas as your Fortnightly TimeSheet workbook: Hourly / Agency = rate × (hours + holiday hours) + Addition; Fixed = Budgeted Wages + Addition. Monthly has one block per week (4–6 weeks) and a Pay date column. Words in the days (SSP, AL, off…) are only notes; holiday hours go in Holidays Hours and SSP money in Addittion/Deduction. An Instructions sheet explains each column.'),
       h('div', { class: 'form-grid g3' }, h('label', { class: 'fld' }, 'Payroll type', stream), h('label', { class: 'fld' }, 'Payroll name', lab), h('label', { class: 'fld' }, 'Fill it with', pre), h('label', { class: 'fld' }, 'First Monday', start), h('label', { class: 'fld' }, 'Number of weeks', weeks)), info,
       h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async (ev) => {
         const b = ev.currentTarget; b.disabled = true; b.textContent = 'Making…';

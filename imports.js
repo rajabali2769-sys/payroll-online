@@ -12,6 +12,7 @@ function loadXLSX() {
 }
 const NEEDED = {
   template: ['Detailed', 'Projects', 'Template Info'],
+  monthly_ts: ['Monthly TimeSheet Details', 'Projects', 'Account List', 'Col Type'],
   monthly: ['Detailed', 'Projects'],
   fortnightly: ['Fortnightly TimeSheet Details', 'Projects', 'Account List', 'Col Type'],
 };
@@ -22,7 +23,7 @@ async function readFile(file) {
   const kind = detectFileKind(XLSX, { SheetNames: names });
   if (!kind) throw new Error('This does not look like a payroll file. Use the Payroll Online template (Download template), or a monthly ("Detailed" sheet) or fortnightly ("Fortnightly TimeSheet Details" sheet) file.');
   const want = names.filter((n) => NEEDED[kind].some((w) => w.toLowerCase() === n.trim().toLowerCase()));
-  const wb = XLSX.read(buf, { type: 'array', sheets: want, cellFormula: false, cellStyles: false, cellNF: false, cellHTML: false });
+  const wb = XLSX.read(buf, { type: 'array', sheets: want, cellFormula: true, cellStyles: false, cellNF: false, cellHTML: false });
   return parseWorkbook(XLSX, wb, file.name);
 }
 
