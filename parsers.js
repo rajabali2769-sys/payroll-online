@@ -176,7 +176,7 @@ export function parseMonthly(XLSX, wb, fileName = '', opt = {}) {
     payDate: colIndex(H, 'Pay date'), tupe: colIndex(H, 'Tupe'), phone: colIndex(H, 'Phone'), pension: colIndex(H, 'Pension'),
     empPct: colIndex(H, 'Employee %'), emprPct: colIndex(H, 'Employer %'), allowance: colIndex(H, 'Allowance'),
     agreements: colIndex(H, 'Agreements'), timings: colIndex(H, 'Timings'),
-    code: colIndex(H, 'Employee ID'), etype: colIndex(H, 'Employment Type'), sspAmt: colIndex(H, 'SSP amount per day'), email: colIndex(H, 'Email'),
+    code: colIndex(H, 'Employee ID'), adhoc: adhocCol(H), etype: colIndex(H, 'Employment Type'), sspAmt: colIndex(H, 'SSP amount per day'), email: colIndex(H, 'Email'),
     // Excel's own results, kept only so we can prove the maths matches
     xActual: colIndex(H, 'Actual Hours'), xLeave: colIndex(H, 'Actual Leaves Hours'), xOver: colIndex(H, 'Over Hours'),
     xLess: colIndex(H, 'Less Hours'), xHourly: colIndex(H, 'Hourly Payment'), xGross: colIndex(H, 'Gross Pay'),
@@ -240,6 +240,7 @@ export function parseMonthly(XLSX, wb, fileName = '', opt = {}) {
     lines.push({
       employee_code: c.code >= 0 ? norm(row[c.code]).toUpperCase() || null : null,
       leave: leaveDays.map((x) => ({ ...x, amount: x.type === 'SSP' ? sspAmt : null })),
+      adhoc: c.adhoc >= 0 ? allocateAdhoc(weeks, toNum(row[c.adhoc])) : [],
       project, site: norm(row[c.site]) || null, employee_name: emp, ni: norm(row[c.ni]).replace(/\s+/g, '').toUpperCase() || null,
       blip_site: norm(row[c.blip]) || null, status: norm(row[c.status]) || null, contract_type: tidyType(row[c.type]),
       hourly_rate: toNum(row[c.rate]) ?? 0, budgeted_hours: budget ?? 0,
@@ -270,6 +271,19 @@ export function parseMonthly(XLSX, wb, fileName = '', opt = {}) {
   };
 }
 
+// "Ad-hoc Hours" column: extra hours charged to the client that are ALREADY inside the hours worked. They are put against the
+// weeks that went over budget first (then the latest weeks), so they come out of the budget but are not paid twice.
+const ADHOC_HEADS = ['Ad-hoc Hours', 'Adhoc Hours', 'Ad hoc Hours', 'Ad-Hoc', 'Adhoc', 'Ad hoc'];
+const adhocCol = (H) => { for (const t of ADHOC_HEADS) { const i = colIndex(H, t); if (i >= 0) return i; } return -1; };
+export function allocateAdhoc(weeks, total) {
+  let rest = +total || 0; const out = new Map(); if (rest <= 0) return [];
+  const over = weeks.map((w) => ({ w, o: (+w.delivered || 0) + (+w.leave || 0) - (+w.budget || 0) })).filter((x) => x.o > 0).sort((a, b) => b.o - a.o);
+  for (const x of over) { if (rest <= 0) break; const take = Math.min(rest, x.o, +x.w.delivered || 0); if (take > 0) { out.set(x.w.week_start, (out.get(x.w.week_start) || 0) + take); rest -= take; } }
+  for (const w of [...weeks].reverse()) { if (rest <= 0) break; const room = (+w.delivered || 0) - (out.get(w.week_start) || 0); const take = Math.min(rest, Math.max(0, room)); if (take > 0) { out.set(w.week_start, (out.get(w.week_start) || 0) + take); rest -= take; } }
+  if (rest > 0.0001 && weeks.length) { const k = weeks[weeks.length - 1].week_start; out.set(k, (out.get(k) || 0) + rest); }
+  return [...out].map(([date, hours]) => ({ date, hours: Math.round(hours * 100) / 100, included: true, note: 'Ad-hoc Hours column' }));
+}
+
 // Does a gross formula add the Addition cell on top (outside any IF)? "IF(AO3="FIXED",AM3+AN3,AD3*AC3)+AN3" → yes; "IF(…)" alone → no
 function addedOutsideIf(f, addr) {
   let s = String(f).replace(/\$/g, '').toUpperCase(); const a = addr.toUpperCase();
@@ -291,7 +305,7 @@ export function parseFortnightly(XLSX, wb, fileName = '', opt = {}) {
     project: colIndex(H, 'Project'), emp: colIndex(H, 'Employee Name'), ni: colIndex(H, 'NI No.'), ftype: colIndex(H, 'Fortnightly type'),
     cover: colIndex(H, 'Cover'), rate: colIndex(H, 'New Hourly Rate'), add: colIndex(H, 'Addittion/Deduction'), ptype: colIndex(H, 'Payroll type'),
     xGross: colIndex(H, 'Gross Wages New rate'), xBud: colIndex(H, 'Budgeted Wages'), xDelivered: colIndex(H, 'Total Delivered Hours'),
-    xToPay: colIndex(H, 'Total Hours to Pay'), code: colIndex(H, 'Employee ID'), payDate: colIndex(H, 'Pay date'), site: colIndex(H, 'Site Name'), notes: colIndex(H, 'Notes'),
+    xToPay: colIndex(H, 'Total Hours to Pay'), adhoc: adhocCol(H), code: colIndex(H, 'Employee ID'), payDate: colIndex(H, 'Pay date'), site: colIndex(H, 'Site Name'), notes: colIndex(H, 'Notes'),
   };
   const hasFormulas = Object.keys(ws).some((k) => k[0] !== '!' && ws[k] && ws[k].f);
   for (const k of ['project', 'emp', 'rate', 'ptype']) if (c[k] < 0) throw new Error(`Missing column for ${k} in "${SHEET}"`);
@@ -355,6 +369,7 @@ export function parseFortnightly(XLSX, wb, fileName = '', opt = {}) {
       pay_group: MONTHLY ? pgM : 'Fortnightly',
       extra: { fortnight_type: c.ftype >= 0 ? toNum(row[c.ftype]) : null, cover: c.cover >= 0 ? norm(row[c.cover]) || null : null, ...(addExcluded ? { addition_not_paid: addRaw } : {}), ...(c.code >= 0 && norm(row[c.code]) ? { employee_code: norm(row[c.code]).toUpperCase() } : {}) },
       employee_code: c.code >= 0 ? norm(row[c.code]).toUpperCase() || null : null,
+      adhoc: c.adhoc >= 0 ? allocateAdhoc(weeks, toNum(row[c.adhoc])) : [],
       weeks, days,
       check: { gross: c.xGross >= 0 ? toNum(row[c.xGross]) : null, budgeted: budgetedWages,
         delivered: c.xDelivered >= 0 ? toNum(row[c.xDelivered]) : null, toPay: c.xToPay >= 0 ? toNum(row[c.xToPay]) : null },

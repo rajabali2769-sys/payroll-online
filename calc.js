@@ -5,9 +5,11 @@ export function calcLine(line, stream) {
   const actual = weeks.reduce((s, w) => s + (+w.delivered || 0), 0);
   const leave = weeks.reduce((s, w) => s + (+w.leave || 0), 0);
   let over = 0, less = 0;
+  const inc = new Map(); for (const a of line.adhoc || []) if (a.included) inc.set(a.date, (inc.get(a.date) || 0) + (+a.hours || 0));
   for (const w of weeks) {
     if (w.in_window === false) continue;
-    const v = w.variance_override != null ? +w.variance_override : (+w.delivered || 0) + (+w.leave || 0) - (+w.budget || 0);
+    const ai = inc.get(w.week_start) || 0;
+    const v = w.variance_override != null ? +w.variance_override - ai : (+w.delivered || 0) - ai + (+w.leave || 0) - (+w.budget || 0);
     if (v > 0) over += v; else if (v < 0) less += v;
   }
   const type = String(line.contract_type || '').toLowerCase();

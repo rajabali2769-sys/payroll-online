@@ -14,14 +14,15 @@ export async function render(root) {
 
   function addEntry() {
     modal('Add ad-hoc hours', (close) => {
-      const who = h('input', { type: 'text', list: 'ah-lines', placeholder: 'Start typing an employee or project…' }), date = h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), hh = h('input', { type: 'number', step: 'any', placeholder: 'hours' }), note = h('input', { type: 'text', placeholder: 'what was it for? (optional)' });
+      const incl = h('input', { type: 'checkbox', checked: true }); const who = h('input', { type: 'text', list: 'ah-lines', placeholder: 'Start typing an employee or project…' }), date = h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), hh = h('input', { type: 'number', step: 'any', placeholder: 'hours' }), note = h('input', { type: 'text', placeholder: 'what was it for? (optional)' });
       const opts = lines.filter((l) => !l.is_adhoc_line).slice(0, 4000).map((l) => ({ id: l.id, label: `${l.employee_name} · ${l.project_name}${l.site_name ? ' · ' + l.site_name : ''}` }));
-      return h('div', { class: 'stack' }, h('datalist', { id: 'ah-lines' }, opts.map((o) => h('option', { value: o.label }))), h('label', { class: 'fld' }, 'Employee and project', who), h('div', { class: 'form-grid' }, h('label', { class: 'fld' }, 'Date', date), h('label', { class: 'fld' }, 'Ad-hoc hours', hh)), h('label', { class: 'fld' }, 'Note', note),
+      return h('div', { class: 'stack' }, h('datalist', { id: 'ah-lines' }, opts.map((o) => h('option', { value: o.label }))), h('label', { class: 'fld' }, 'Employee and project', who), h('div', { class: 'form-grid' }, h('label', { class: 'fld' }, 'Date', date), h('label', { class: 'fld' }, 'Ad-hoc hours', hh)), h('label', { class: 'fld' }, 'Note', note), h('label', { class: 'row small' }, incl, 'Already in their hours worked — only take them out of the budget (untick = extra hours paid on top)'),
         h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: close }, 'Cancel'), h('button', { class: 'btn primary', onClick: async () => { const o = opts.find((x) => x.label === who.value); if (!o || !date.value || !(+hh.value > 0)) return toast('Choose a person from the list, a date and the hours', 'err');
-          try { await addAdhoc(o.id, [{ date: date.value, hours: +hh.value, note: note.value.trim() }]); close(); toast('Ad-hoc hours added', 'ok'); await load(); } catch (e) { toast(e.message, 'err'); } } }, 'Add')));
+          try { await addAdhoc(o.id, [{ date: date.value, hours: +hh.value, note: note.value.trim(), included: incl.checked }]); close(); toast('Ad-hoc hours added', 'ok'); await load(); } catch (e) { toast(e.message, 'err'); } } }, 'Add')));
     });
   }
-  function draw() {
+  function draw() { draw0(); host.append(adhocLines()); }
+  function draw0() {
     const byProj = new Map(); for (const r of rows) { const k = normKey(r.project_name); const p = byProj.get(k) || { key: k, name: r.project_name, hours: 0, cost: 0, charge: 0, rate: r.client_rate, rows: [] }; p.hours += +r.hours || 0; p.cost += +r.cost || 0; p.charge += +r.charge || 0; p.rate = r.client_rate; p.rows.push(r); byProj.set(k, p); }
     const list = [...byProj.values()].sort((a, b) => b.charge - a.charge || b.hours - a.hours), tot = list.reduce((s, p) => ({ h: s.h + p.hours, c: s.c + p.cost, ch: s.ch + p.charge }), { h: 0, c: 0, ch: 0 }), noRate = list.filter((p) => p.hours > 0 && !(+p.rate > 0));
     const rateInput = (p) => { const i = h('input', { type: 'number', step: 'any', value: p.rate ?? '', placeholder: 'set rate', disabled: !can(), style: { width: '90px', textAlign: 'right' } });
@@ -35,7 +36,15 @@ export async function render(root) {
           ...(open.has(p.key) ? p.rows.map((r) => h('tr', null, h('td', { class: 'muted small', style: { paddingLeft: '26px' } }, `${dmy(r.work_date)} · ${r.employee_name}${r.site_name ? ' · ' + r.site_name : ''}`, r.note ? ` · ${r.note}` : ''), h('td', { class: 'num small' }, hrs(r.hours)), h('td', { class: 'num small' }, money(r.cost)), h('td'), h('td', { class: 'num small' }, money(r.charge)),
             h('td', null, can() && r.source === 'itemised' ? h('button', { class: 'btn sm danger', onClick: async () => { try { await deleteAdhocDay(r.line_id, String(r.work_date).slice(0, 10)); await load(); } catch (e) { toast(e.message, 'err'); } } }, '×') : h('span', { class: 'small muted' }, r.source)))) : [])])))) : h('div', { class: 'card empty' }, 'No ad-hoc hours in this payroll yet.'));
   }
-  async function load() { [rows, status] = await Promise.all([loadAdhoc(run.id).catch(() => []), loadProjectStatus(run.id).catch(() => [])]); if (!lines.length) lines = (await loadRunData(run.id).catch(() => ({ lines: [] }))).lines; draw(); }
+  function adhocLines() {
+    const al = lines.filter((l) => l.is_adhoc_line);
+    return h('div', { class: 'card pad', style: { marginTop: '14px' } }, h('h3', null, `Ad-hoc lines in this payroll (${al.length})`),
+      h('div', { class: 'small muted', style: { marginBottom: '8px' } }, 'Ad-hoc hours come from: lines whose name contains ADHOC (or ticked as ad-hoc on the line), the “Ad-hoc Hours” column of the payroll sheet, and hours added here or on a line. None of them count against the budget.'),
+      al.length ? h('div', { class: 'tablewrap', style: { maxHeight: '40vh' } }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Employee', 'Project', 'Hours', 'Pay'].map((t, i) => h('th', { class: i > 1 ? 'num' : '' }, t)))),
+        h('tbody', null, al.map((l) => h('tr', null, h('td', null, l.employee_name), h('td', { class: 'small' }, l.project_name), h('td', { class: 'num' + (+l.actual_hours ? '' : ' muted') }, hrs(l.actual_hours)), h('td', { class: 'num' }, money(l.gross_pay)))))))
+        : h('div', { class: 'small muted' }, 'No ad-hoc lines.'));
+  }
+  async function load() { [rows, status] = await Promise.all([loadAdhoc(run.id).catch(() => []), loadProjectStatus(run.id).catch(() => [])]); lines = (await loadRunData(run.id).catch(() => ({ lines: [] }))).lines; draw(); }
   await load();
-  return onLive(debounce((e) => { if (e.table === 'adhoc_hours' || e.table === 'daily_hours') load(); }, 1000));
+  return onLive(debounce((e) => { if (e.table === 'adhoc_hours' || e.table === 'daily_hours' || e.table === 'payroll_lines') load(); }, 1000));
 }

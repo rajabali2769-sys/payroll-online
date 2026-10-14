@@ -1,5 +1,5 @@
 // Side panel for one payroll line: weekly figures, day-by-day hours, notes, history.
-import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit, loadLineLeave, addLeave, deleteLeave, loadLineAdhoc, addAdhoc, deleteAdhoc } from './api.js';
+import { loadLine, loadLineWeeks, loadDays, updateLine, upsertWeek, upsertDay, deleteLine, loadAudit, loadLineLeave, addLeave, deleteLeave, loadLineAdhoc, addAdhoc, deleteAdhoc, setLineAdhoc } from './api.js';
 import { h, clear, money, hrs, dm, dmy, addDays, mondayOf, DOW, toast, confirmBox, statusPill, ago, icon } from './ui.js';
 import { ctx, runEditable, payRules } from './ctx.js';
 
@@ -98,7 +98,7 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
       h('div', { class: 'small muted', style: { marginBottom: '6px' } }, `${hrs(line.adhoc_hours)} ad-hoc hour${+line.adhoc_hours === 1 ? '' : 's'}${+line.adhoc_charge ? ' · to charge ' + money(line.adhoc_charge) : (line.client_rate ? '' : ' · no client rate set for this project (Budgets)')} · paid at the normal rate, never counted against the budget`),
       adhoc.length ? h('div', { class: 'tablewrap auto' }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Date', 'Hours', 'Note', ''].map((t, i) => h('th', { class: i === 1 ? 'num' : '' }, t)))),
         h('tbody', null, adhoc.map((x) => h('tr', null, h('td', null, dmy(x.work_date)), h('td', { class: 'num' }, hrs(x.hours)), h('td', { class: 'muted' }, x.note || ''), h('td', null, edit ? h('button', { class: 'btn sm danger', onClick: () => guard(() => deleteAdhoc(x.id)) }, '×') : null)))))) : (line.is_adhoc_line ? h('div', { class: 'muted small' }, 'This whole line is ad-hoc work (its name contains “ADHOC”).') : h('div', { class: 'muted small' }, 'No ad-hoc hours on this line.')),
-      edit && !line.is_adhoc_line ? adhocForm() : null,
+      edit ? adhocForm() : null,
 
       h('h4', null, 'Pay inputs & notes'),
       h('div', { class: 'form-grid' },
@@ -126,8 +126,11 @@ export async function openLineDrawer(lineId, { onChange, onDelete } = {}) {
 
   function adhocForm() {
     const date = h('input', { type: 'date' }), hours = h('input', { type: 'number', step: 'any', placeholder: 'hours', style: { width: '90px' } }), note = h('input', { type: 'text', placeholder: 'what was it for? (optional)' });
-    return h('div', { class: 'row wrap', style: { marginTop: '8px', alignItems: 'flex-end' } }, h('label', { class: 'fld' }, 'Date', date), h('label', { class: 'fld' }, 'Ad-hoc hours', hours), h('label', { class: 'fld grow' }, 'Note', note),
-      h('button', { class: 'btn primary sm', onClick: () => { if (!date.value || !(+hours.value > 0)) return toast('Choose a date and the hours', 'err'); guard(() => addAdhoc(lineId, [{ date: date.value, hours: +hours.value, note: note.value.trim() }])).then(() => toast('Ad-hoc hours added', 'ok')); } }, 'Add ad-hoc'));
+    const incl = h('input', { type: 'checkbox', checked: true });
+    return h('div', { class: 'stack', style: { marginTop: '8px' } }, h('div', { class: 'row wrap', style: { alignItems: 'flex-end' } }, h('label', { class: 'fld' }, 'Date', date), h('label', { class: 'fld' }, 'Ad-hoc hours', hours), h('label', { class: 'fld grow' }, 'Note', note),
+      h('button', { class: 'btn primary sm', onClick: () => { if (!date.value || !(+hours.value > 0)) return toast('Choose a date and the hours', 'err'); guard(() => addAdhoc(lineId, [{ date: date.value, hours: +hours.value, note: note.value.trim(), included: incl.checked }])).then(() => toast(incl.checked ? 'Ad-hoc hours moved out of the budget' : 'Extra ad-hoc hours added (paid on top)', 'ok')); } }, 'Add ad-hoc')),
+      h('label', { class: 'row small' }, incl, 'These hours are already in the hours worked above — only take them out of the budget (untick to pay them on top as extra hours)'),
+      h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: !!line.is_adhoc, onChange: (e) => guard(() => setLineAdhoc(lineId, e.target.checked)).then(() => toast(e.target.checked ? 'The whole line is now ad-hoc (no budget)' : 'Line is back to normal', 'ok')) }), 'The whole line is ad-hoc (all its hours are charged to the client, none count against the budget)'));
   }
 
   function leaveForm() {

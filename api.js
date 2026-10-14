@@ -183,7 +183,7 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
 
     // lines, weeks, days ------------------------------------------------------
     const lines = p.lines.filter((l) => !skipKeys.has([l.project, l.site, l.employee_name, l.contract_type].map(normKey).join('|')));
-    const L = [], W = [], D = [], LV = [];
+    const L = [], W = [], D = [], LV = [], AH = [];
     for (const l of lines) {
       const id = crypto.randomUUID(), pr = projFor(l.project);
       L.push({ id, run_id: run.id, employee_id: empFor(l), project_id: pr?.id ?? null, project_name: l.project, site_name: l.site, employee_name: l.employee_name,
@@ -192,11 +192,13 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
         remarks: l.remarks, comments: l.comments, pay_group: l.pay_group || pr?.pay_group || null, extra: l.extra });
       for (const w of l.weeks) W.push({ line_id: id, week_start: w.week_start, delivered: w.delivered, leave: w.leave, budget: w.budget, in_window: w.in_window, variance_override: w.variance_override });
       for (const d of l.days) D.push({ line_id: id, work_date: d.d, hours: d.hours, note: d.note });
+      for (const a of l.adhoc || []) AH.push({ line_id: id, work_date: a.date, hours: +a.hours || 0, included: !!a.included, note: a.note || null });
       for (const v of l.leave || []) LV.push({ line_id: id, leave_date: v.date, hours: +v.hours || 0, type_code: v.type, amount: v.amount ?? null, note: 'From the payroll template' });
     }
     const total = L.length + W.length + D.length; let done = 0;
     const push = async (table, rows, size) => { for (const part of chunk(rows, size)) { ok(await sb.from(table).insert(part)); done += part.length; onProgress(done / total, `${table.replace('_', ' ')}… ${done.toLocaleString()} / ${total.toLocaleString()}`); } };
     await push('payroll_lines', L, 200); await push('line_weeks', W, 1000); await push('daily_hours', D, 1000);
+    for (const part of chunk(AH, 1000)) ok(await sb.from('adhoc_hours').upsert(part, { onConflict: 'line_id,work_date' }));
     // leave words typed in the day cells (SSP, AL, ML, off sick, UBL …) become leave records — the pay is already in the sheet
     let leaveFromSheet = 0; try { leaveFromSheet = ok(await sb.rpc('apply_leave_from_notes', { p_run: run.id })) || 0; } catch (e) { console.warn('leave from notes', e); }
     // "Cover: Yes" in the sheet → the person is a temporary / cover employee (shown under Temporary / cover)
@@ -213,7 +215,7 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
     ok(await sb.from('pay_runs').update({ status: 'ready' }).eq('id', run.id));
     ok(await sb.rpc('log_import', { p_run: run.id, p_text: `${p.source_file} · ${L.length} lines (${mode === 'merge' ? 'new rows only' : mode === 'replace' ? 'replaced run' : 'new run'})` }));
     onProgress(1, 'Done');
-    return { run, lines: L.length, skipped: p.lines.length - L.length, leave_from_sheet: leaveFromSheet, covers: toCover.length };
+    return { run, lines: L.length, skipped: p.lines.length - L.length, leave_from_sheet: leaveFromSheet, covers: toCover.length, adhoc_hours: AH.reduce((t, a) => t + a.hours, 0) };
   } catch (e) {
     try { if (created) await sb.from('pay_runs').delete().eq('id', run.id); else await sb.from('pay_runs').update({ status: 'ready' }).eq('id', run.id); } catch { /* ignore */ }
     throw e;
@@ -420,7 +422,8 @@ export const loadProjectStatus = async (runId) => fetchAll(() => sb.from('v_proj
 export const loadProjectStatusForRuns = async (ids) => fetchAll(() => sb.from('v_project_status').select('*').in('run_id', ids).order('project_key'));
 export const loadAdhoc = async (runId) => fetchAll(() => sb.from('v_adhoc').select('*').eq('run_id', runId).order('work_date').order('line_id'));
 export const loadLineAdhoc = async (lineId) => ok(await sb.from('adhoc_hours').select('*').eq('line_id', lineId).order('work_date'));
-export async function addAdhoc(lineId, entries) { if (entries.length) ok(await sb.from('adhoc_hours').upsert(entries.map((e) => ({ line_id: lineId, work_date: e.date, hours: +e.hours || 0, note: e.note || null })), { onConflict: 'line_id,work_date' })); }
+export async function addAdhoc(lineId, entries) { if (entries.length) ok(await sb.from('adhoc_hours').upsert(entries.map((e) => ({ line_id: lineId, work_date: e.date, hours: +e.hours || 0, note: e.note || null, included: !!e.included })), { onConflict: 'line_id,work_date' })); }
+export const setLineAdhoc = async (lineId, on) => ok(await sb.from('payroll_lines').update({ is_adhoc: !!on }).eq('id', lineId));
 export const deleteAdhoc = async (id) => ok(await sb.from('adhoc_hours').delete().eq('id', id));
 
 export const loadEmployeesFull = async () => fetchAll(() => sb.from('employees').select('id,employee_code,full_name,name_key,ni_number,email,phone,active,leaver_date,default_project,default_site,default_rate,default_contract,emp_status').order('full_name').order('id'));
@@ -580,7 +583,8 @@ const inRuns = (q, runIds) => (runIds && runIds.length ? q.in('run_id', runIds) 
 export async function loadDataset(key, { runIds = [], from = null, to = null } = {}) {
   switch (key) {
     case 'employees': { const [rows, al] = await Promise.all([loadStaff(), loadAlBalances().catch(() => [])]); const m = new Map(al.map((a) => [a.employee_id, a])); return rows.map((e) => { const a = m.get(e.id) || {}; return { ...e, al_entitlement_year: a.entitlement ?? null, al_accrued: a.accrued ?? null, al_taken: a.taken ?? null, al_available: a.available ?? null, al_remaining: a.remaining ?? null }; }); }
-    case 'payroll_lines': return fetchAll(() => inRuns(sb.from('v_payroll_lines').select('*'), runIds).order('id'));
+    case 'payroll_lines': { const [ls, st] = await Promise.all([fetchAll(() => inRuns(sb.from('v_payroll_lines').select('*'), runIds).order('id')), loadStaff().catch(() => [])]); const m = new Map(st.map((e) => [e.id, e]));
+      return ls.map((l) => { const e = m.get(l.employee_id) || {}; return { ...l, employee_code: e.employee_code || null, employment_type: e.employment_type || null, cover: (l.extra && l.extra.cover) || (e.employment_type === 'cover' ? 'Yes' : e.employment_type ? 'No' : null), area_manager: e.area_manager || null, extra: undefined }; }); }
     case 'daily_hours': return fetchAll(() => { let q = inRuns(sb.from('v_daily').select('*'), runIds); if (from) q = q.gte('work_date', from); if (to) q = q.lte('work_date', to); return q.order('line_id').order('work_date'); });
     case 'leave': return fetchAll(() => inRuns(sb.from('v_leave').select('*'), runIds).order('id'));
     case 'project_status': return fetchAll(() => inRuns(sb.from('v_project_status').select('*'), runIds).order('project_key'));

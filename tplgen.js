@@ -55,7 +55,7 @@ export async function buildTimesheet({ stream, label, start, weeks = 2, prefill,
   const C = {}; const head = [...lead];
   wk.forEach((w, i) => { C['d' + i] = head.length; for (let d = 0; d < 7; d++) head.push(serial(plus(w, d))); C['b' + i] = head.length; head.push('Weekly Budget', 'Original Hours', 'Holidays Hours'); });
   const add = (k, t) => { C[k] = head.length; head.push(t); };
-  add('del', 'Total Delivered Hours'); add('hol', 'Total Holiday Hours'); add('pay', 'Total Hours to Pay'); add('rate', 'New Hourly Rate'); add('bh', 'Total Budgeted Hours');
+  add('del', 'Total Delivered Hours'); add('hol', 'Total Holiday Hours'); add('pay', 'Total Hours to Pay'); add('adh', 'Ad-hoc Hours'); add('rate', 'New Hourly Rate'); add('bh', 'Total Budgeted Hours');
   add('ww', 'Working Weeks'); add('dc', 'Deep Cleaning'); add('ae', 'Annual Entitlement'); add('tcw', 'Total Contracted Weeks');
   wk.forEach((_, i) => add('diff' + i, `Difference in Hours Week ${String(i + 1).padStart(2, '0')}`));
   add('gross', 'Gross Wages New rate'); add('bud', 'Budgeted Wages'); add('addn', 'Addittion/Deduction'); add('type', 'Payroll type'); add('code', 'Employee ID'); add('notes', 'Notes');
@@ -109,7 +109,8 @@ export async function buildTimesheet({ stream, label, start, weeks = 2, prefill,
     ['Addittion/Deduction', 'Money only (+ add / − take off). SSP goes here at £24.65 a day, e.g. =24.65*10. Notes go in the Notes column — words here are ignored.'],
     ['Holidays Hours', 'Paid holiday hours for that week: paid, and they count towards the budget.'], ['Difference in Hours', '= Original Hours + Holidays Hours − Weekly Budget for each week (positive = over budget).'],
     ...(MONTHLY ? [['Pay date', 'The pay date group: 24th, 25th, 26th, 28th, 29th, Last Working day, 5th (empty = the project’s pay date).']] : []),
-    ['ADHOC lines', 'Name them “Name(ADHOC)” and put the hours in the days. Do not put the same money in Addittion/Deduction as well.'],
+    ['Ad-hoc Hours', 'Extra hours charged to the client that are ALREADY in the day cells (e.g. 70 worked, budget 60, 10 ad-hoc → type 10). They are paid once, kept out of the budget and shown on Ad-hoc & billing.'],
+    ['ADHOC lines', 'Or put ad-hoc work on its own line named “Name(ADHOC)” with the hours in the days — the whole line is kept out of the budget. Do not put the same money in Addittion/Deduction as well.'],
     ['Employee ID', 'Optional: the Payroll Online ID (CFM00012) — matches people even when the spelling differs.'], [''], ['Import', 'Payroll Online → Import Excel → drop this file. The preview checks every line against this sheet.']];
   const wi = XLSX.utils.aoa_to_sheet(ins); wi['!cols'] = [{ wch: 26 }, { wch: 130 }]; XLSX.utils.book_append_sheet(wb, wi, 'Instructions');
   const wp = XLSX.utils.aoa_to_sheet([['Project Name', 'Pay date', 'Start Date', 'End Date'], ...projects.map((p) => [p.name, p.pay_group === 'LWD' ? 'Last Working day' : p.pay_group || '', p.start_date || '', p.end_date || ''])]); XLSX.utils.book_append_sheet(wb, wp, 'Projects');

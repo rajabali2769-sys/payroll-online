@@ -1,5 +1,6 @@
 // Custom reports: pick any data in the system, choose columns, filter, group and total, chart it, export it, save it.
-import { loadDataset, loadSavedReports, saveReport, deleteReport } from './api.js';
+import { loadDataset, loadSavedReports, saveReport, deleteReport, sendEmails } from './api.js';
+import { loadXLSX } from './xlsx.js';
 import { h, clear, toast, modal, icon, dmy, money, debounce, natCompare, confirmBox } from './ui.js';
 import { ctx, currentRuns } from './ctx.js';
 import { panel, expandAllBtn } from './panels.js';
@@ -12,6 +13,8 @@ const SOURCES = [
   ['cover_hours', 'Cover hours', false, true], ['clock_shifts', 'Clock in / out shifts', false, true], ['projects', 'Projects & POCs', false, false], ['email_log', 'Emails sent', false, false],
 ];
 const STARTERS = [
+  { name: 'Cover cleaners paid above £12.71 (employee list)', def: { source: 'employees', title: 'Cover cleaners paid above £12.71', note: 'Temporary / cover staff whose hourly rate is above £12.71.', columns: ['employee_code', 'full_name', 'default_project', 'area_manager', 'default_rate', 'weekly_hours', 'weekly_pay', 'hire_date'], filters: [['employment_type', '=', 'cover'], ['default_rate', '>', '12.71'], ['emp_status', '≠', 'terminated']], sort: ['default_rate', 'desc'] } },
+  { name: 'Cover lines above £12.71 (current payroll)', def: { source: 'payroll_lines', current: true, title: 'Cover cleaners paid above £12.71 — this payroll', note: 'Cover staff on this payroll paid more than £12.71 an hour, with their hours and gross pay.', columns: ['employee_code', 'employee_name', 'project_name', 'pay_group', 'hourly_rate', 'actual_hours', 'gross_pay'], filters: [['cover', '=', 'Yes'], ['hourly_rate', '>', '12.71']], sort: ['hourly_rate', 'desc'] } },
   { name: 'Employees by area manager', def: { source: 'employees', groupBy: ['area_manager'], measures: [['count', ''], ['sum', 'weekly_hours'], ['sum', 'weekly_pay']], filters: [['emp_status', '=', 'active']] } },
   { name: 'Headcount by project and type', def: { source: 'employees', groupBy: ['default_project', 'employment_type'], measures: [['count', '']], filters: [['emp_status', '≠', 'terminated']] } },
   { name: 'Annual leave left by project', def: { source: 'employees', groupBy: ['default_project'], measures: [['sum', 'al_accrued'], ['sum', 'al_taken'], ['sum', 'al_remaining']], filters: [['emp_status', '=', 'active']] } },
@@ -45,14 +48,16 @@ export async function render(root) {
   const resSub = h('span', { class: 'psub2' });
   const pRes = panel(h('span', null, 'Result ', resSub), resBody, { id: 'rep.res', actions: h('div', { class: 'row', style: { gap: '6px' } }, h('button', { class: 'btn sm', onClick: () => doExport('xlsx') }, icon('download'), 'Excel'), h('button', { class: 'btn sm', onClick: () => doExport('csv') }, 'CSV'), h('button', { class: 'btn sm', onClick: () => window.print() }, 'Print')) });
   const pChart = panel('Chart', chartBody, { id: 'rep.chart' });
-  const stack = h('div', { class: 'hrstack' }, h('div', { class: 'pgrid2', style: { gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', marginBottom: 0 } }, pCols, pFilt, pGrp), pRes, pChart);
+  const designBody = h('div');
+  const pDesign = panel('Design & email', designBody, { id: 'rep.design', sub: ' · title, note, column names — then email it' });
+  const stack = h('div', { class: 'hrstack' }, h('div', { class: 'pgrid2', style: { gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', marginBottom: 0 } }, pCols, pFilt, pGrp), pDesign, pRes, pChart);
 
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Custom reports'), h('p', null, 'Report on anything in the system: pick the data, the columns, filters and totals. Export to Excel, or save it for next time.')),
     h('div', { class: 'row wrap' }, expandAllBtn(() => stack))),
   h('div', { class: 'card pad repbar' },
     h('label', { class: 'fld' }, 'Saved & ready-made reports', savedSel),
     h('label', { class: 'fld' }, 'Data', srcSel), h('label', { class: 'fld runwrap' }, 'Payroll(s)', runSel), h('label', { class: 'fld datewrap' }, 'From', from), h('label', { class: 'fld datewrap' }, 'To', to),
-    h('div', { class: 'row', style: { alignSelf: 'end', gap: '6px' } }, h('button', { class: 'btn primary', onClick: () => load() }, icon('search'), 'Run report'), h('button', { class: 'btn', onClick: saveDlg }, 'Save'), status)),
+    h('div', { class: 'row', style: { alignSelf: 'end', gap: '6px' } }, h('button', { class: 'btn primary', onClick: () => load() }, icon('search'), 'Run report'), h('button', { class: 'btn', onClick: saveDlg }, 'Save'), h('button', { class: 'btn', onClick: () => emailDlg() }, icon('mail'), 'Email'), status)),
   stack);
 
   const showInputs = () => { const s = SOURCES.find((x) => x[0] === srcSel.value); root.querySelector('.runwrap').classList.toggle('hidden', !s[2]); root.querySelectorAll('.datewrap').forEach((el) => el.classList.toggle('hidden', !s[3])); };
@@ -142,11 +147,12 @@ export async function render(root) {
     result = { cols, rows: out, total: data.length };
     drawResult(sk);
   }
-  const label = (c) => (c === 'count' ? 'Count' : /^(sum|avg|min|max)_/.test(c) ? `${{ sum: 'Total', avg: 'Average', min: 'Min', max: 'Max' }[c.split('_')[0]]} ${nice(c.split('_').slice(1).join('_')).toLowerCase()}` : nice(c));
+  const label = (c) => ((def.labels || {})[c] ? def.labels[c] : c === 'count' ? 'Count' : /^(sum|avg|min|max)_/.test(c) ? `${{ sum: 'Total', avg: 'Average', min: 'Min', max: 'Max' }[c.split('_')[0]]} ${nice(c.split('_').slice(1).join('_')).toLowerCase()}` : nice(c));
   const moneyish = (c) => /(pay|gross|budget|difference|amount|rate|charge|net|tax|pension|salary)/.test(c) && !/hours|count|status/.test(c);
   const fmt = (c, v) => (v === null || v === undefined || v === '' ? '' : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? dmy(v) : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? new Date(v).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : isNum(v) && (numeric.has(c) || /^(count|sum_|avg_|min_|max_)/.test(c)) ? (moneyish(c) ? money(+v) : (+v).toLocaleString('en-GB', { maximumFractionDigits: 2 })) : String(v));
 
   function drawResult(sk) {
+    drawDesign();
     const { cols, rows: out, total } = result;
     resSub.textContent = def.groupBy.length ? `· ${out.length} groups from ${total} rows` : `· ${out.length} rows`;
     const numCols = cols.filter((c) => out.some((r) => isNum(r[c])) && (numeric.has(c) || /^(count|sum_|avg_|min_|max_)/.test(c)));
@@ -155,7 +161,7 @@ export async function render(root) {
     clear(resBody).append(out.length ? h('div', { class: 'tablewrap', style: { maxHeight: '62vh' } }, h('table', { class: 't' },
       h('thead', null, h('tr', null, cols.map((c) => h('th', { class: 'click' + (numCols.includes(c) ? ' num' : ''), title: 'Sort', onClick: () => { def.sort = [c, sk && sk[0] === c && sk[1] === 'desc' ? 'asc' : 'desc']; compute(); } }, label(c), sk && sk[0] === c ? (sk[1] === 'desc' ? ' ▼' : ' ▲') : '')))),
       h('tbody', null, show.map((r) => h('tr', null, cols.map((c) => h('td', { class: numCols.includes(c) ? 'num' : '' }, fmt(c, r[c])))))),
-      Object.keys(sums).length ? h('tfoot', null, h('tr', null, cols.map((c, i) => h('td', { class: numCols.includes(c) ? 'num' : '' }, h('b', null, i === 0 && !(c in sums) ? 'Total' : c in sums ? fmt(c, sums[c]) : ''))))) : null)) : h('div', { class: 'small muted' }, rows.length ? 'No rows match the filters.' : 'Pick the data and press Run report.'),
+      def.totals !== false && Object.keys(sums).length ? h('tfoot', null, h('tr', null, cols.map((c, i) => h('td', { class: numCols.includes(c) ? 'num' : '' }, h('b', null, i === 0 && !(c in sums) ? 'Total' : c in sums ? fmt(c, sums[c]) : ''))))) : null)) : h('div', { class: 'small muted' }, rows.length ? 'No rows match the filters.' : 'Pick the data and press Run report.'),
       out.length > 2000 ? h('div', { class: 'small muted' }, `Showing the first 2,000 of ${out.length} rows — export to see them all.`) : null);
     // chart: first group column against the first total
     const m = def.groupBy.length ? cols.find((c) => /^(count|sum_|avg_|min_|max_)/.test(c)) : null;
@@ -163,6 +169,62 @@ export async function render(root) {
     const top = out.slice(0, 30), max = Math.max(1, ...top.map((r) => Math.abs(+r[m] || 0)));
     clear(chartBody).append(h('div', { class: 'small muted', style: { marginBottom: '8px' } }, `${label(m)} by ${def.groupBy.map(nice).join(' / ').toLowerCase()}${out.length > 30 ? ' (top 30)' : ''}`),
       h('div', { class: 'cmp' }, top.map((r) => h('div', { class: 'cmprow' }, h('div', { class: 'lab', title: def.groupBy.map((k) => r[k]).join(' / ') }, def.groupBy.map((k) => fmt(k, r[k])).join(' / ')), h('div', { class: 'cmpbar' }, h('i', { style: { width: (Math.abs(+r[m] || 0) / max * 100) + '%', background: +r[m] < 0 ? '#ef4444' : 'linear-gradient(90deg,#6c5ce7,#2563eb)' } }), h('span', null, fmt(m, r[m])))))));
+  }
+
+  function drawDesign() {
+    const cols = result ? result.cols : [];
+    const title = h('input', { type: 'text', value: def.title || '', placeholder: 'Report title, e.g. Cover cleaners paid above £12.71' });
+    const note = h('textarea', { rows: 2, placeholder: 'A short note shown above the table (optional)' }, def.note || '');
+    const tot = h('input', { type: 'checkbox', checked: def.totals !== false });
+    title.addEventListener('input', debounce(() => { def.title = title.value.trim(); }, 200)); note.addEventListener('input', debounce(() => { def.note = note.value.trim(); }, 200));
+    tot.onchange = () => { def.totals = tot.checked; compute(); };
+    clear(designBody).append(h('div', { class: 'form-grid' }, h('label', { class: 'fld' }, 'Report title', title), h('label', { class: 'fld' }, 'Note', note)),
+      h('label', { class: 'row small', style: { margin: '6px 0' } }, tot, 'Show the totals row'),
+      cols.length ? h('div', null, h('div', { class: 'small muted', style: { margin: '6px 0' } }, 'Column names in the report (rename any of them):'),
+        h('div', { class: 'colnames' }, cols.map((c) => h('label', { class: 'fld' }, h('span', { class: 'small muted' }, nice(c)), h('input', { type: 'text', value: (def.labels || {})[c] || '', placeholder: label(c), onChange: (e) => { def.labels = { ...(def.labels || {}), [c]: e.target.value.trim() }; if (!e.target.value.trim()) delete def.labels[c]; compute(); } }))))) : h('div', { class: 'small muted' }, 'Run the report to rename its columns.'),
+      h('div', { class: 'row', style: { justifyContent: 'flex-end', marginTop: '8px' } }, h('button', { class: 'btn primary', onClick: () => emailDlg() }, icon('mail'), 'Email this report')));
+  }
+  // the report as an HTML table for email
+  function reportHtml(maxRows = 300) {
+    const { cols, rows: out } = result; const esc = (v) => String(v ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const numCols = cols.filter((c) => out.some((r) => isNum(r[c])) && (numeric.has(c) || /^(count|sum_|avg_|min_|max_)/.test(c)));
+    const sums = Object.fromEntries(numCols.filter((c) => !/^(avg|min|max)_/.test(c) && !/rate|_code|year/.test(c)).map((c) => [c, r2(out.reduce((t, r) => t + (+r[c] || 0), 0))]));
+    const th = (t, n) => `<th style="background:#4c3fb0;color:#fff;padding:7px 9px;font-size:12px;text-align:${n ? 'right' : 'left'};white-space:nowrap">${esc(t)}</th>`;
+    const td = (t, n, i) => `<td style="padding:6px 9px;font-size:12.5px;border-bottom:1px solid #eceaf6;${i % 2 ? 'background:#faf9ff;' : ''}text-align:${n ? 'right' : 'left'}">${esc(t)}</td>`;
+    const body = out.slice(0, maxRows).map((r, i) => `<tr>${cols.map((c) => td(fmt(c, r[c]), numCols.includes(c), i)).join('')}</tr>`).join('');
+    const foot = def.totals !== false && Object.keys(sums).length ? `<tr>${cols.map((c, i) => `<td style="padding:7px 9px;font-weight:bold;border-top:2px solid #4c3fb0;text-align:${numCols.includes(c) ? 'right' : 'left'}">${i === 0 && !(c in sums) ? 'Total' : c in sums ? esc(fmt(c, sums[c])) : ''}</td>`).join('')}</tr>` : '';
+    return `<div style="font-family:Arial,Helvetica,sans-serif;color:#15172b"><h2 style="margin:0 0 4px;color:#3b2a8c">${esc(def.title || (current && current.name) || 'Report')}</h2>${def.note ? `<p style="margin:0 0 10px;color:#4b5168">${esc(def.note)}</p>` : ''}<p style="margin:0 0 10px;font-size:12px;color:#6b7290">${out.length} row(s) · ${new Date().toLocaleString('en-GB')}${out.length > maxRows ? ` · first ${maxRows} shown — all rows are in the attached Excel file` : ''}</p><table style="border-collapse:collapse;border:1px solid #e3e0f5">${'<tr>' + cols.map((c) => th(label(c), numCols.includes(c))).join('') + '</tr>'}${body}${foot}</table></div>`;
+  }
+  async function xlsxBase64() {
+    const XLSX = await loadXLSX(); const { cols, rows: out } = result;
+    const aoa = [[def.title || 'Report'], def.note ? [def.note] : [], [], cols.map(label), ...out.map((r) => cols.map((c) => (isNum(r[c]) && (numeric.has(c) || /^(count|sum_|avg_|min_|max_)/.test(c)) ? +r[c] : r[c] ?? '')))];
+    const ws = XLSX.utils.aoa_to_sheet(aoa); ws['!cols'] = cols.map((c) => ({ wch: Math.max(12, label(c).length + 2) }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Report'); return XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  }
+  function emailDlg() {
+    if (!result || !result.rows.length) return toast('Run the report first', 'err');
+    if (!ctx.can('send_emails')) return toast('Your role cannot send emails', 'err');
+    modal('Email this report', (done) => {
+      const to = h('input', { type: 'text', placeholder: 'cfo@crystalfm.co.uk, …' }), cc = h('input', { type: 'text', placeholder: 'optional' });
+      const subj = h('input', { type: 'text', value: def.title || (current && current.name) || 'Report' });
+      const msg = h('textarea', { rows: 3 }, `Hello,\n\nPlease find the report “${def.title || (current && current.name) || 'Report'}” below and attached as Excel.\n\nKind regards`);
+      const attach = h('input', { type: 'checkbox', checked: true });
+      const prev = h('div', { class: 'email-prev', html: reportHtml(15) });
+      return h('div', { class: 'stack' }, h('div', { class: 'form-grid' }, h('label', { class: 'fld' }, 'To (comma separated)', to), h('label', { class: 'fld' }, 'Copy to', cc)), h('label', { class: 'fld' }, 'Subject', subj), h('label', { class: 'fld' }, 'Message', msg),
+        h('label', { class: 'row small' }, attach, 'Attach the full report as an Excel file'), h('div', { class: 'small muted' }, 'Preview (first rows):'), prev,
+        h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn', onClick: done }, 'Cancel'), h('button', { class: 'btn primary', onClick: async (ev) => {
+          const list = to.value.split(/[,;\s]+/).filter((x) => /@/.test(x)); if (!list.length) return toast('Add at least one email address', 'err');
+          const b = ev.currentTarget; b.disabled = true; b.textContent = 'Sending…';
+          try {
+            const att = attach.checked ? [{ filename: `${(def.title || 'report').replace(/[^\w]+/g, '_')}.xlsx`, content: await xlsxBase64() }] : [];
+            const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;white-space:pre-wrap;margin-bottom:16px">${msg.value.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</div>${reportHtml(300)}`;
+            const ccl = cc.value.split(/[,;\s]+/).filter((x) => /@/.test(x));
+            const r = await sendEmails('other', list.map((t) => ({ to: t, cc: ccl, subject: subj.value, html, text: msg.value, attachments: att })));
+            if (!r.sent) throw new Error((r.results && r.results[0] && r.results[0].error) || 'Not sent');
+            done(); toast(`Report emailed to ${list.join(', ')}`, 'ok');
+          } catch (e) { b.disabled = false; b.textContent = 'Send'; toast(e.message, 'err'); }
+        } }, icon('mail'), 'Send')));
+    }, { wide: true });
   }
 
   function doExport(kind) {

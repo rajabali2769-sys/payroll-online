@@ -745,3 +745,5 @@ table.t tbody tr:nth-child(even) td { background: #fbfaff; }
 .ov-list, .pcard { box-shadow: 0 6px 20px rgba(40,30,120,.08); }
 .nscard.picked { border-color: #7c5cff; box-shadow: 0 0 0 3px #ece8ff; }
 .nr-opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid #e3defd; border-radius: 12px; padding: 10px 12px; cursor: pointer; background: #fbfaff; } .nr-opt:has(input:checked) { border-color: #7c5cff; background: #f4f0ff; }
+.colnames { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; }
+.email-prev { max-height: 260px; overflow: auto; border: 1px solid #e7e3fb; border-radius: 10px; padding: 10px; background: #fff; }
