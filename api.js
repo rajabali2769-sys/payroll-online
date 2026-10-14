@@ -197,6 +197,13 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
     const total = L.length + W.length + D.length; let done = 0;
     const push = async (table, rows, size) => { for (const part of chunk(rows, size)) { ok(await sb.from(table).insert(part)); done += part.length; onProgress(done / total, `${table.replace('_', ' ')}… ${done.toLocaleString()} / ${total.toLocaleString()}`); } };
     await push('payroll_lines', L, 200); await push('line_weeks', W, 1000); await push('daily_hours', D, 1000);
+    // leave words typed in the day cells (SSP, AL, ML, off sick, UBL …) become leave records — the pay is already in the sheet
+    let leaveFromSheet = 0; try { leaveFromSheet = ok(await sb.rpc('apply_leave_from_notes', { p_run: run.id })) || 0; } catch (e) { console.warn('leave from notes', e); }
+    // "Cover: Yes" in the sheet → the person is a temporary / cover employee (shown under Temporary / cover)
+    const coverBy = new Map(); for (const l of lines) { const id = empFor(l), cv = String((l.extra && l.extra.cover) || '').trim().toLowerCase(); if (!id || !cv) continue; const yes = /^(y|yes|cover|agency)/.test(cv); coverBy.set(id, (coverBy.get(id) || false) || yes); }
+    const toCover = [...coverBy].filter(([, y]) => y).map(([id]) => id), toPerm = [...coverBy].filter(([, y]) => !y).map(([id]) => id);
+    for (const part of chunk(toCover, 200)) await sb.from('employees').update({ employment_type: 'cover' }).in('id', part).neq('employment_type', 'cover');
+    for (const part of chunk(toPerm, 200)) await sb.from('employees').update({ employment_type: 'permanent' }).in('id', part).neq('employment_type', 'permanent');
     if (LV.length) { const codes = new Set((await loadLeaveTypes()).map((t) => t.code)); for (const part of chunk(LV.filter((x) => codes.has(x.type_code)), 1000)) ok(await sb.from('line_leave').upsert(part, { onConflict: 'line_id,leave_date' })); }
 
     // pay windows: add the ones we do not have yet (never overwrite windows someone already edited)
@@ -206,7 +213,7 @@ export async function importPayload(p, { label, mode = 'new', onProgress = () =>
     ok(await sb.from('pay_runs').update({ status: 'ready' }).eq('id', run.id));
     ok(await sb.rpc('log_import', { p_run: run.id, p_text: `${p.source_file} · ${L.length} lines (${mode === 'merge' ? 'new rows only' : mode === 'replace' ? 'replaced run' : 'new run'})` }));
     onProgress(1, 'Done');
-    return { run, lines: L.length, skipped: p.lines.length - L.length };
+    return { run, lines: L.length, skipped: p.lines.length - L.length, leave_from_sheet: leaveFromSheet, covers: toCover.length };
   } catch (e) {
     try { if (created) await sb.from('pay_runs').delete().eq('id', run.id); else await sb.from('pay_runs').update({ status: 'ready' }).eq('id', run.id); } catch { /* ignore */ }
     throw e;

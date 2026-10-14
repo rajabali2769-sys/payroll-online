@@ -111,7 +111,7 @@ export async function render(root) {
       if (!l.pay_group) A.noGroup++;
       const ws = S.weeksByLine.get(l.id) || [];
       if (ws.some((w) => w.variance_override !== null && w.variance_override !== undefined)) A.overrides++;
-      for (const w of ws) { if (!w.in_window) continue; A.wd += num(w.delivered); const W = A.weeks.get(w.week_start) || { label: w.week_start, budget: 0, actual: 0 }; W.budget += num(w.budget); W.actual += num(w.delivered) + num(w.leave); A.weeks.set(w.week_start, W); }
+      if (!l.is_adhoc_line) for (const w of ws) { if (!w.in_window) continue; A.wd += num(w.delivered); const W = A.weeks.get(w.week_start) || { label: w.week_start, budget: 0, actual: 0 }; W.budget += num(w.budget); W.actual += num(w.delivered) + num(w.leave); A.weeks.set(w.week_start, W); }
     }
     // Project-level decisions use the project's own weekly hours budget (from Budgets) when there is one
     const tol = payRules().budget_tolerance_hours ?? 0.25; A.projOver = 0; A.projUnder = 0; A.projOverH = 0; A.adhocH = 0; A.adhocCharge = 0;

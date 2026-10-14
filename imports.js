@@ -74,7 +74,7 @@ export async function render(root) {
         const exists = existing.some((r) => r.label === name);
         const res = await importPayload(p, { label: name, mode: exists ? modeSel.value : 'new', onProgress: (x, t) => { bar.style.width = Math.round(x * 100) + '%'; status.textContent = t; } });
         ctx.runs = await loadRuns(); setRun(res.run.id);
-        clear(card).append(h('b', null, file.name), h('div', { class: 'notice', style: { marginTop: '10px' } }, `Imported ${res.lines.toLocaleString()} lines into “${name}”.${res.skipped ? ` ${res.skipped} already existed and were skipped.` : ''} Everyone can see it now.`),
+        clear(card).append(h('b', null, file.name), h('div', { class: 'notice', style: { marginTop: '10px' } }, `Imported ${res.lines.toLocaleString()} lines into “${name}”.${res.skipped ? ` ${res.skipped} already existed and were skipped.` : ''}${res.leave_from_sheet ? ` ${res.leave_from_sheet} leave / SSP day(s) read from the day cells (see Leave & SSP).` : ''}${res.covers ? ` ${res.covers} people marked as cover (Cover = Yes).` : ''} Everyone can see it now.`),
           h('div', { class: 'row', style: { marginTop: '10px' } }, h('a', { class: 'btn primary', href: '#/payroll' }, 'Open payroll'), h('a', { class: 'btn', href: '#/calendar' }, 'Check pay windows'), h('a', { class: 'btn', href: '#/dashboard' }, 'Dashboard')));
       } catch (e) { console.error(e); btn.disabled = false; status.textContent = ''; toast(e.message || String(e), 'err'); bar.style.width = '0'; }
     } }, icon('upload'), 'Import');

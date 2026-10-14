@@ -18,6 +18,7 @@ export function calcLine(line, stream) {
   const budgetHours = stream === 'monthly'
     ? (line.weeks_reconciled == null ? 0 : (+line.budgeted_hours || 0) * (+line.weeks_reconciled))
     : weeks.reduce((s, w) => s + (+w.budget || 0), 0);
-  const budgeted = fixed !== null ? fixed : line.budget_override != null ? +line.budget_override : budgetHours * rate;
-  return { actual, leave, over, less, hourly, gross, budget_hours: budgetHours, budgeted, diff: gross - budgeted };
+  const adhoc = /ad[\s_-]*hoc/i.test(String(line.employee_name || ''));
+  const budgeted = adhoc ? 0 : fixed !== null ? fixed : line.budget_override != null ? +line.budget_override : budgetHours * rate;
+  return { actual, leave, over, less, hourly, gross, budget_hours: adhoc ? 0 : budgetHours, budgeted, diff: gross - budgeted };
 }

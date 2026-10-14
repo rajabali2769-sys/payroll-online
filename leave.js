@@ -1,5 +1,5 @@
 // Leave & SSP: every leave record in this pay run, by type (paid / unpaid / SSP).
-import { loadRunLeave, onLive, deleteLeave } from './api.js';
+import { loadRunLeave, onLive, deleteLeave, sb } from './api.js';
 import { h, clear, money, hrs, dmy, debounce, natCompare, toast, downloadCSV, icon, donut } from './ui.js';
 import { ctx, currentRun, runPicker, runEditable, payRules } from './ctx.js';
 import { openLineDrawer } from './line-drawer.js';
@@ -14,6 +14,7 @@ export async function render(root) {
   let rows = [], type = '', q = '';
   const host = h('div');
   const bulkHost = h('span');
+  if (runEditable(run.id)) bulkHost.append(h('button', { class: 'btn', title: 'Turn SSP / AL / ML / sick / unpaid words in the day cells of this payroll into leave records', onClick: async (ev) => { ev.currentTarget.disabled = true; try { const { data, error } = await sb.rpc('apply_leave_from_notes', { p_run: run.id }); if (error) throw error; toast(`${data || 0} leave / SSP day(s) read from the sheet`, 'ok'); rows = await loadRunLeave(run.id); draw(); } catch (e) { toast(e.message, 'err'); } finally { ev.currentTarget && (ev.currentTarget.disabled = false); } } }, icon('book'), 'Read leave from the sheet'));
   if (runEditable(run.id)) bulkLeaveButton(run, () => loadRunLeave(run.id).then((r) => { rows = r; draw(); })).then((b) => bulkHost.append(b));
   root.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Leave & SSP'), h('p', null, 'Leave requests from the My Pay app, and every leave / SSP day in this payroll. Upload many at once with “Upload leave & SSP”.')), h('div', { class: 'row wrap' }, bulkHost, runPicker(() => location.reload()))), reqHost, host);
 
@@ -29,7 +30,7 @@ export async function render(root) {
           h('div', { class: 'legend-list' }, [...byType.entries()].map(([code, t]) => h('div', { class: 'li click', onClick: () => { type = type === code ? '' : code; draw(); } }, h('i', { class: 'sw', style: { background: t.color } }), t.name, h('b', null, String(t.n))))))),
         h('div', { class: 'card pad' }, h('h3', null, 'SSP at a glance'),
           h('div', { class: 'big', style: { fontSize: '28px', fontWeight: 800 } }, money(sspTotal)),
-          h('div', { class: 'small muted' }, `${rows.filter((r) => r.ssp).length} SSP days · default ${money(perDay)} a day (£${rules.ssp_weekly_rate} a week ÷ ${rules.ssp_days}) · change it in Settings`),
+          h('div', { class: 'small muted' }, `${rows.filter((r) => r.ssp).length} SSP days${rows.some((r) => r.ssp && r.pay_included) ? ' (days read from the sheet are paid through Addittion/Deduction there)' : ''} · default ${money(perDay)} a day (£${rules.ssp_weekly_rate} a week ÷ ${rules.ssp_days}) · change it in Settings`),
           h('div', { class: 'notice warn', style: { marginTop: '10px' } }, 'From 6 April 2026 SSP is paid from day one at the lower of £123.25 a week or 80% of average weekly earnings. For part-time or low-paid staff enter the reduced amount on the day (✎) after checking their average earnings.'))),
       h('div', { class: 'toolbar' }, h('label', { class: 'fld w2' }, 'Search', h('input', { type: 'search', placeholder: 'Employee, project…', value: q, onInput: debounce((e) => { q = e.target.value.toLowerCase(); draw(); }, 150) })),
         h('label', { class: 'fld' }, 'Type', h('select', { onChange: (e) => { type = e.target.value; draw(); } }, h('option', { value: '' }, 'All types'), ctx.leaveTypes.map((t) => h('option', { value: t.code, selected: t.code === type }, t.name)))),
@@ -38,7 +39,7 @@ export async function render(root) {
         h('thead', null, h('tr', null, ['Date', 'Employee', 'Project', 'Type', 'Hours', 'Amount', 'Note', ''].map((t, i) => h('th', { class: i === 4 || i === 5 ? 'num' : '' }, t)))),
         h('tbody', null, shown.map((r) => h('tr', null, h('td', null, dmy(r.leave_date)), h('td', null, h('a', { href: '#', onClick: (e) => { e.preventDefault(); openLineDrawer(r.line_id, { onChange: () => {} }); } }, r.employee_name)),
           h('td', { class: 'muted' }, [r.project_name, r.site_name].filter(Boolean).join(' · ')), h('td', null, h('span', { class: 'tag', style: { background: r.color || '#6c5ce7' } }, r.type_name)),
-          h('td', { class: 'num' }, r.ssp ? '' : hrs(r.hours)), h('td', { class: 'num' }, r.ssp ? money(r.amount ?? perDay) : r.paid ? 'paid' : '£0.00'), h('td', { class: 'muted' }, r.note || ''),
+          h('td', { class: 'num' }, r.ssp ? '' : hrs(r.hours)), h('td', { class: 'num' }, r.ssp ? money(r.amount ?? perDay) : r.paid ? 'paid' : '£0.00'), h('td', { class: 'muted' }, r.note || '', r.pay_included ? h('span', { class: 'hpill grp', style: { marginLeft: '6px' }, title: 'Read from the payroll sheet: the pay is already in the sheet (Holidays Hours / Addition), so it is not paid twice' }, 'paid in sheet') : null),
           h('td', null, runEditable(run.id) ? h('button', { class: 'btn sm danger', onClick: async () => { try { await deleteLeave(r.id); rows = rows.filter((x) => x.id !== r.id); draw(); } catch (e) { toast(e.message, 'err'); } } }, '×') : null)))))) : h('div', { class: 'card empty' }, rows.length ? 'No leave matches.' : 'No leave recorded yet. Open an employee in Payroll and use “Leave & absence”.'));
   }
   async function load() { try { rows = await loadRunLeave(run.id); } catch (e) { rows = []; toast(e.message, 'err'); } draw(); }
