@@ -707,3 +707,14 @@ export async function loadRunForTemplate(runId) {
   const by = new Map(); for (const w of weeks) { if (!by.has(w.line_id)) by.set(w.line_id, []); by.get(w.line_id).push(+w.budget || 0); }
   return lines.map((l) => ({ ...l, week_budgets: by.get(l.id) || [] }));
 }
+
+// =====================================================================================================
+// v5.7: week plans (term time / term break / deep clean) and week-by-week history
+// =====================================================================================================
+export const loadWeekPlans = async () => fetchAll(() => sb.from('project_week_budgets').select('*').order('project_name').order('week_start').order('id'));
+export async function saveWeekPlans(rows) { for (const part of chunk(rows.map((r) => ({ ...r, updated_at: new Date().toISOString() })), 500)) ok(await sb.from('project_week_budgets').upsert(part, { onConflict: 'name_key,week_start' })); }
+export const deleteWeekPlans = async (nameKey, weeks) => { let q = sb.from('project_week_budgets').delete().eq('name_key', nameKey); if (weeks) q = q.in('week_start', weeks); ok(await q); };
+export const loadTerms = async () => fetchAll(() => sb.from('project_terms').select('*').order('project_name').order('date_from').order('id'));
+export async function saveTerms(rows) { for (const part of chunk(rows, 500)) ok(await sb.from('project_terms').upsert(part, { onConflict: 'name_key,term_name,date_from' })); }
+export const loadProjectHistory = async () => fetchAll(() => sb.from('v_project_history').select('*').order('project_key').order('week_start'));
+export async function setContractedWeeks(pairs) { for (const [id, w] of pairs) ok(await sb.from('employees').update({ contracted_weeks: w }).eq('id', id)); }

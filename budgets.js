@@ -5,6 +5,7 @@ import { loadXLSX, sheetRows } from './xlsx.js';
 import { h, clear, hrs, money, toast, modal, icon, statusPill, downloadCSV, debounce, confirmBox } from './ui.js';
 import { ctx, currentRun, runPicker, runEditable } from './ctx.js';
 import { normKey } from './parsers.js';
+import { weekPlansTab } from './weekplans.js';
 
 export async function render(root) {
   const run = currentRun(), can = () => ctx.canEdit;
@@ -30,7 +31,7 @@ export async function render(root) {
       h('div', { class: 'tablewrap' }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Project', 'Weekly budget (h)', 'Client rate £/h (ad-hoc)', run ? 'In ' + run.label : 'Payroll', 'Budget h', 'Worked h', 'Leave h (not counted)', 'Ad-hoc h (not counted)', 'Difference', 'Status', ''].map((t, i) => h('th', { class: i > 3 && i < 9 ? 'num' : '' }, t)))),
         h('tbody', null, shown.map((b) => { const s = sb.get(b.name_key);
           return h('tr', null, h('td', null, h('b', null, b.project_name)), h('td', { class: 'num' }, numInp(b, 'weekly_hours')), h('td', { class: 'num' }, numInp(b, 'client_rate', 'not set')), h('td', { class: 'muted small' }, s ? `${s.weeks} week${+s.weeks === 1 ? '' : 's'}` : 'not in this payroll'),
-            h('td', { class: 'num' }, s ? hrs(s.budget_hours) : ''), h('td', { class: 'num' }, s ? hrs(s.worked_hours) : ''), h('td', { class: 'num muted' }, s && s.leave_hours != null ? hrs(s.leave_hours) : ''), h('td', { class: 'num muted' }, s ? hrs(s.adhoc_hours) : ''), h('td', { class: 'num ' + (s && +s.hours_difference > 0.25 ? 'neg' : s && +s.hours_difference < -0.25 ? 'pos' : '') }, s ? (+s.hours_difference > 0 ? '+' : '') + hrs(s.hours_difference) : ''), h('td', null, s ? statusPill(s.budget_status) : ''),
+            h('td', { class: 'num' }, s ? hrs(s.budget_hours) : ''), h('td', { class: 'num' }, s ? hrs(s.worked_hours) : ''), h('td', { class: 'num muted' }, s && s.leave_hours != null ? hrs(s.leave_hours) : ''), h('td', { class: 'num muted' }, s ? hrs(s.adhoc_hours) : ''), h('td', { class: 'num ' + (s && +s.hours_difference > 0.25 ? 'neg' : s && +s.hours_difference < -0.25 ? 'pos' : '') }, s ? (+s.hours_difference > 0 ? '+' : '') + hrs(s.hours_difference) : ''), h('td', null, s ? statusPill(s.budget_status) : '', s && s.budget_source === 'week plan' ? h('span', { class: 'hpill grp', style: { marginLeft: '4px' }, title: s.week_types || '' }, 'week plan') : null),
             h('td', null, can() ? h('button', { class: 'btn sm danger', onClick: async () => { if (await confirmBox('Remove this budget?', `${b.project_name} will fall back to its line budgets.`, 'Remove', true)) { try { await deleteProjectBudget(b.name_key); await refresh(); } catch (e) { toast(e.message, 'err'); } } } }, '×') : null)); })))));
   }
   function addProject(name = '', hours = '') {
@@ -50,7 +51,8 @@ export async function render(root) {
       shown.length ? h('div', { class: 'tablewrap' }, h('table', { class: 't' }, h('thead', null, h('tr', null, ['Employee', 'NI', 'Project', 'Weekly hours', ''].map((t, i) => h('th', { class: i === 3 ? 'num' : '' }, t)))),
         h('tbody', null, shown.slice(0, 500).map((b) => h('tr', null, h('td', null, b.employee_name), h('td', null, b.ni_number || ''), h('td', null, b.project_name), h('td', { class: 'num' }, hrs(b.weekly_hours)), h('td', null, can() ? h('button', { class: 'btn sm danger', onClick: async () => { try { await deleteEmployeeBudget(b.id); await refresh(); } catch (e) { toast(e.message, 'err'); } } }, '×') : null)))))) : h('div', { class: 'card empty' }, 'No employee budgets yet — import them from Excel when you have them.'));
   }
-  function draw() { clear(host).append(h('div', { class: 'seg', style: { marginBottom: '12px' } }, h('button', { class: tab === 'projects' ? 'on' : '', onClick: () => { tab = 'projects'; q = ''; draw(); } }, `Project budgets (${budgets.length})`), h('button', { class: tab === 'employees' ? 'on' : '', onClick: () => { tab = 'employees'; q = ''; draw(); } }, `Employee budgets (${ebs.length})`)), tab === 'projects' ? projectsTab() : employeesTab()); }
+  function draw() { clear(host).append(h('div', { class: 'seg', style: { marginBottom: '12px' } }, h('button', { class: tab === 'projects' ? 'on' : '', onClick: () => { tab = 'projects'; q = ''; draw(); } }, `Project budgets (${budgets.length})`), h('button', { class: tab === 'employees' ? 'on' : '', onClick: () => { tab = 'employees'; q = ''; draw(); } }, `Employee budgets (${ebs.length})`), h('button', { class: tab === 'weeks' ? 'on' : '', onClick: () => { tab = 'weeks'; q = ''; draw(); } }, 'Week plans & history')), tab === 'projects' ? projectsTab() : tab === 'weeks' ? weeksHost() : employeesTab()); }
+  function weeksHost() { const el = h('div'); weekPlansTab(el, { onChange: () => { loadProjectStatus(run ? run.id : null).then((st) => { status = st; }).catch(() => {}); } }).catch((e) => el.append(h('div', { class: 'notice err' }, e.message + ' — run the latest schema.sql.'))); return el; }
   async function refresh() { [budgets, status, ebs] = await Promise.all([loadProjectBudgets(), run ? loadProjectStatus(run.id).catch(() => []) : [], loadEmployeeBudgets().catch(() => [])]); draw(); }
   await refresh();
   return onLive(debounce((e) => { if (e.table === 'project_budgets') refresh(); }, 800));
